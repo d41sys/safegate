@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "safegate"
+version = "0.1.0"
+description = "Constitutional safety gate with prompt injection detection, content classification, and streaming output filtering"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+
+[project.scripts]
+safegate = "safegate.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/safegate"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/safegate/data" = "safegate/data"
+"src/safegate/rule_configs" = "safegate/rule_configs"

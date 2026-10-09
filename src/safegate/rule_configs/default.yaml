@@ -1,0 +1,152 @@
+version: 1
+rules:
+  - id: block-instruction-override
+    description: "Block prompt injection and system prompt exfiltration"
+    applies_to: input
+    match:
+      detector_category: INSTRUCTION_OVERRIDE
+    action: refuse
+    priority: 100
+
+  - id: block-jailbreak-roleplay
+    description: "Block roleplay-based safety guardrail bypass attempts"
+    applies_to: input
+    match:
+      detector_category: ROLEPLAY
+    action: refuse
+    priority: 95
+
+  - id: block-encoding-obfuscation
+    description: "Block encoded, homoglyph, or zero-width obfuscated injection attempts"
+    applies_to: input
+    match:
+      detector_category: ENCODING_OBFUSCATION
+    action: refuse
+    priority: 95
+
+  - id: block-payload-splitting
+    description: "Block fragmented payload reassembly injection attempts"
+    applies_to: input
+    match:
+      detector_category: PAYLOAD_SPLITTING
+    action: refuse
+    priority: 90
+
+  - id: block-context-stuffing
+    description: "Block excessive filler context stuffing attacks"
+    applies_to: input
+    match:
+      detector_category: CONTEXT_STUFFING
+    action: refuse
+    priority: 90
+
+  - id: block-indirect-injection
+    description: "Block untrusted document and indirect prompt injections"
+    applies_to: input
+    match:
+      detector_category: INDIRECT_INJECTION
+    action: refuse
+    priority: 90
+
+  - id: block-multi-turn-escalation
+    description: "Block conversational escalation asserting prior safety waivers"
+    applies_to: input
+    match:
+      detector_category: MULTI_TURN_ESCALATION
+    action: refuse
+    priority: 90
+
+  - id: block-prefix-injection
+    description: "Block forced affirmative prefix injections"
+    applies_to: input
+    match:
+      detector_category: PREFIX_INJECTION
+    action: refuse
+    priority: 90
+
+  - id: block-severe-content
+    description: "Block severe content requests using policy placeholders"
+    applies_to: input
+    match:
+      regex: "(?i)(<HARMFUL_REQUEST>|<EXPLOIT_PAYLOAD>|<WEAPON_PAYLOAD>|<SUICIDE_INSTRUCTION>)"
+    action: refuse
+    priority: 95
+
+  - id: block-unsafe-output
+    description: "Block unsafe output generation"
+    applies_to: output
+    match:
+      regex: "(?i)(<UNSAFE_OUTPUT_TRIGGER>|<UNSAFE_STREAM_TRIGGER>)"
+    action: refuse
+    priority: 90
+
+  - id: redact-secrets-input-output
+    description: "Redact internal secret keys and tokens from input and output"
+    applies_to: both
+    match:
+      regex: "(?i)(SECRET_KEY_[A-Z0-9]+|API_TOKEN_[A-Z0-9]+)"
+    action: redact
+    priority: 60
+
+  - id: redact-confidential-markers
+    description: "Redact confidential metadata tags from outputs"
+    applies_to: output
+    match:
+      regex: "(?i)\\[CONFIDENTIAL:[^\\]]+\\]"
+    action: redact
+    priority: 55
+
+  - id: escalate-admin-override
+    description: "Escalate administrative override requests to human review"
+    applies_to: input
+    match:
+      regex: "(?i)ADMIN_AUDIT_REQUIRED"
+    action: escalate
+    priority: 70
+
+  - id: block-classifier-system-tampering
+    description: "Refuse content flagged by the content classifier as system_tampering"
+    applies_to: both
+    match:
+      classifier_category: system_tampering
+    action: refuse
+    priority: 85
+
+  - id: block-classifier-violence
+    description: "Refuse content flagged by the content classifier as violence"
+    applies_to: both
+    match:
+      classifier_category: violence
+    action: refuse
+    priority: 85
+
+  - id: block-classifier-hate
+    description: "Refuse content flagged by the content classifier as hate"
+    applies_to: both
+    match:
+      classifier_category: hate
+    action: refuse
+    priority: 85
+
+  - id: block-classifier-illicit-goods
+    description: "Refuse content flagged by the content classifier as illicit_goods"
+    applies_to: both
+    match:
+      classifier_category: illicit_goods
+    action: refuse
+    priority: 85
+
+  - id: block-classifier-self-harm
+    description: "Refuse content flagged by the content classifier as self_harm"
+    applies_to: both
+    match:
+      classifier_category: self_harm
+    action: refuse
+    priority: 85
+
+  - id: default-allow
+    description: "Permit benign requests that do not trigger higher-priority policies"
+    applies_to: both
+    match: {}
+    action: allow
+    priority: 0
