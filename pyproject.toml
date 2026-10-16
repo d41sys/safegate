@@ -22,10 +22,6 @@ safegate = "safegate.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/safegate"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/safegate/data" = "safegate/data"
-"src/safegate/rule_configs" = "safegate/rule_configs"
-
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 
