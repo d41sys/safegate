@@ -71,3 +71,14 @@ def test_blocked_input_never_calls_model_and_trace_is_json() -> None:
     data = json.loads(json.dumps(trace.to_dict()))
     assert set(data) == {"request_id", "prompt_preview", "checkpoints", "final_action", "total_ms"}
     assert data["checkpoints"][0]["signals"]["detector_score"] > 0.5
+
+
+def test_late_trigger_after_emitted_prefix_skips_post_gen() -> None:
+    # A long safe prefix is released before the trigger arrives; the stream is still cut.
+    chunks = ["Safe text. " * 20, "then <UNSAFE_OUTPUT_TRIGGER> appears", "never emitted"]
+    output, trace = SafetyGate().run("write a story", MockStreamingLLM({"story": chunks}))
+
+    assert output.startswith("Safe text.")
+    assert output.endswith(WITHHELD_MESSAGE)
+    assert "never emitted" not in output
+    assert [s for s, _ in _stages(trace.to_dict())] == ["pre_gen", "during_gen"]

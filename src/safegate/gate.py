@@ -307,7 +307,7 @@ class SafetyGate:
 
         stream = llm_fn(self._effective_prompt(prompt, decision))
         output = "".join(self.stream_output(stream, trace))
-        if output == WITHHELD_MESSAGE:
+        if output.endswith(WITHHELD_MESSAGE):  # a safe prefix may precede it
             trace.total_ms = elapsed()
             return output, trace
 
