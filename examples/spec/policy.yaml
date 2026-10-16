@@ -1,0 +1,18 @@
+# Contract bounds for a synthetic site controller. Not tied to any real contract.
+version: 1
+on_violation: refuse        # refuse | escalate | warn
+count:
+  min: 1
+  max: 2
+provenance:
+  require_source_id: true
+  trusted_source_ids: [msg-001]   # ids of messages the operator signed
+kinds:
+  power_cap_kw:
+    value: {min: 20, max: 60}
+    window: {earliest: "06:00", latest: "12:00"}
+    max_count: 1
+    max_delta: {value: 10, minutes: 60}   # vs the last trusted spec
+  reserve_frac:
+    value: {min: 0.0, max: 0.3}
+    max_count: 1

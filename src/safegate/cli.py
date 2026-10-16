@@ -8,6 +8,7 @@ import sys
 from collections import Counter
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -24,6 +25,7 @@ from safegate.gate import SafetyGate
 from safegate.injection import InjectionDetector
 from safegate.mock_llm import MockStreamingLLM
 from safegate.refusal import RefusalEvaluator
+from safegate.spec import check_spec, load_spec_policy
 from safegate.taxonomy import Sample
 
 
@@ -296,6 +298,38 @@ def cmd_external_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_json_object(path: str) -> dict[str, Any]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: top-level JSON value must be an object")
+    return data
+
+
+def cmd_spec_check(args: argparse.Namespace) -> int:
+    """Check an emitted constraint spec against a contract-bounds policy.
+
+    Exit code: 0 for allow/warn, 1 for a blocking action, 2 for unreadable input.
+    """
+    try:
+        policy = load_spec_policy(Path(args.policy))
+        spec = _load_json_object(args.spec)
+        previous = _load_json_object(args.previous) if args.previous else None
+        decision = check_spec(spec, policy, previous)
+    except (OSError, ValueError) as exc:  # JSONDecodeError and SpecPolicyError are ValueErrors
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(decision.to_dict(), indent=2))
+    else:
+        print(f"action:   {decision.action}")
+        print(f"rules:    {', '.join(decision.rule_ids) or 'none'}")
+        print(f"delta:    {'checked' if decision.metadata['delta_checked'] else 'skipped'}")
+        for reason in decision.reasons:
+            print(f"  - {reason}")
+    return 1 if decision.action in BLOCKING_ACTIONS else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser."""
     parser = argparse.ArgumentParser(
@@ -337,6 +371,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_ext.add_argument("--no-retrain", action="store_true", help="skip the retrained variants")
     p_ext.add_argument("--errors", type=int, default=5, help="false negatives/positives to list")
     p_ext.set_defaults(func=cmd_external_eval)
+
+    p_spec = sub.add_parser(
+        "spec-check",
+        help="Check an LLM-emitted constraint spec (JSON) against a contract-bounds policy (YAML)",
+    )
+    p_spec.add_argument("spec", help="emitted spec JSON file")
+    p_spec.add_argument("--policy", required=True, help="spec policy YAML file")
+    p_spec.add_argument("--previous", help="last trusted spec JSON, enables the delta bounds")
+    p_spec.add_argument("--json", action="store_true", help="print the Decision as JSON")
+    p_spec.set_defaults(func=cmd_spec_check)
 
     return parser
 

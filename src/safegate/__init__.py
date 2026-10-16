@@ -14,6 +14,7 @@ from safegate.injection import Detection, InjectionDetector
 from safegate.mock_llm import MockStreamingLLM
 from safegate.refusal import RefusalEvaluator, RefusalReport
 from safegate.rules import Rule, RuleConfigError, RulesEngine
+from safegate.spec import SpecPolicy, SpecPolicyError, check_spec, load_spec_policy
 from safegate.taxonomy import AttackCategory, Sample
 
 __all__ = [
@@ -34,6 +35,10 @@ __all__ = [
     "RulesEngine",
     "SafetyGate",
     "Sample",
+    "SpecPolicy",
+    "SpecPolicyError",
+    "check_spec",
+    "load_spec_policy",
 ]
 
 __version__ = "0.1.0"

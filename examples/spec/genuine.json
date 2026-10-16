@@ -1,0 +1,1 @@
+{"constraints": [{"kind": "power_cap_kw", "value": 35, "start": "07:30", "end": "10:30", "source_id": "msg-001"}]}

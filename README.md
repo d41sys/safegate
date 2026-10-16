@@ -47,6 +47,7 @@ flowchart LR
 | `classifier.py` | `ContentClassifier` Protocol; `KeywordClassifier` (default), `OpenAIModerationClassifier` (extra `[openai]`, no-op without `OPENAI_API_KEY`), `CompositeClassifier` (max-score per category) |
 | `rules.py` + `rule_configs/default.yaml` | Strict-schema rules engine; unknown keys raise `RuleConfigError` |
 | `gate.py` | `SafetyGate.check_input`, `stream_output`, `wrap(llm_fn)`, `run(prompt, llm_fn) -> (text, RequestTrace)`, JSONL audit trail |
+| `spec.py` | `check_spec(spec, policy, previous) -> Decision` and `load_spec_policy`: deterministic contract-bounds gate on an LLM-emitted constraint spec; used by `safegate spec-check` |
 | `refusal.py` | Refusal rate, over-refusal rate, regex-based refusal-quality score |
 | `mock_llm.py` | Deterministic streaming mock with scripted safe and unsafe outputs |
 | `external.py` | Loader (plain HTTPS, cached in `data/raw/`), Wilson CIs and scoring for public datasets; used by `safegate external-eval` |
@@ -63,6 +64,7 @@ uv run safegate redteam        # held-out 20% split of the self-authored set
 uv run safegate external-eval --dataset deepset     # public data, needs network
 uv run safegate external-eval --dataset jailbreak   # public data, needs network
 uv run safegate refusal-eval   # refusal / over-refusal / quality
+uv run safegate spec-check examples/spec/genuine.json --policy examples/spec/policy.yaml
 uv run pytest -q
 ```
 
@@ -258,6 +260,37 @@ final action: refuse
 | Over-Refusal Rate (Benign) | <= 10% | 0.0% (0/10) |
 | Refusal Quality Score | >= 0.70 | 0.75 / 1.00 |
 ```
+
+## Spec gate: checking what the model emits
+
+The text gate reads what goes into the model. When an LLM turns text into a machine-readable specification for an optimiser or controller, the structured output can be checked deterministically before it is used. `safegate spec-check` applies a strict YAML policy of contract bounds to the emitted constraint JSON:
+
+| Bound (policy key) | Rule code | Checks |
+| --- | --- | --- |
+| `kinds` | `spec-kind` | only listed constraint kinds may appear |
+| `kinds.<k>.value` | `spec-value` | value inside `[min, max]` |
+| `kinds.<k>.window` | `spec-window` | start/end inside `earliest`/`latest` hours, start before end |
+| `count`, `kinds.<k>.max_count` | `spec-count`, `spec-kind-count` | number of constraints |
+| `provenance` | `spec-provenance` | every constraint carries a `source_id`, optionally from a trusted list |
+| `kinds.<k>.max_delta` | `spec-delta` | value and time shift versus the last trusted spec (`--previous`) |
+| malformed spec | `spec-schema` | not an object, bad types, NaN, bool as number, bad `HH:MM` |
+
+```bash
+uv run safegate spec-check examples/spec/genuine.json \
+  --policy examples/spec/policy.yaml --previous examples/spec/previous.json      # allow, exit 0
+uv run safegate spec-check examples/spec/forged_out_of_bounds.json \
+  --policy examples/spec/policy.yaml --previous examples/spec/previous.json      # refuse, exit 1
+```
+
+```python
+from safegate import check_spec, load_spec_policy
+
+decision = check_spec(spec, load_spec_policy("policy.yaml"), previous=last_trusted_spec)
+```
+
+`check_spec` returns the same `Decision` as the text gate, with `action` `allow` or the policy's `on_violation` (`refuse`, `escalate` or `warn`). A spec that does not parse is refused. The delta bounds are skipped when no previous spec is given. The policy fails closed: unknown keys, bad types and inconsistent bounds raise `SpecPolicyError` at load time. Exit codes: 0 allow/warn, 1 blocked, 2 unreadable input. Spec format and fixtures are synthetic (`examples/spec/`).
+
+**Limit, by design: this gate checks bounds, not truth.** A forged edit that stays inside every bound, for example a 30 kW cap instead of 35 kW inside the allowed hours (`examples/spec/forged_in_bounds.json`), is accepted, and so is a forged edit that copies a trusted `source_id`. Test `test_in_bounds_forgery_passes_by_design` pins this. Tight bounds shrink the harm such an edit can do, and they also block genuine notices that fall outside the envelope. The gate complements an origin check; it does not replace one.
 
 ## Design decisions
 
