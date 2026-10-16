@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from safegate.classifier import CompositeClassifier, KeywordClassifier
 from safegate.gate import SafetyGate
 from safegate.injection import InjectionDetector

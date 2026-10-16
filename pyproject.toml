@@ -25,3 +25,21 @@ packages = ["src/safegate"]
 [tool.hatch.build.targets.wheel.force-include]
 "src/safegate/data" = "safegate/data"
 "src/safegate/rule_configs" = "safegate/rule_configs"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+markers = ["slow: trains models / downloads data", "network: needs internet"]
+addopts = "-m 'not slow and not network'"
