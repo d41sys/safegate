@@ -21,7 +21,14 @@ from typing import Any
 
 import numpy as np
 
+from safegate.stage2 import Stage2Model, fit_stage2
 from safegate.taxonomy import AttackCategory, Sample
+
+STAGE2_MODES = ("legacy", "v2")
+# The pre-declared decision rule (README, "Stage 2 v2: protocol") did not pass, so legacy stays
+# the default and v2 is opt-in: InjectionDetector(stage2="v2") or `safegate check --stage2 v2`.
+DEFAULT_STAGE2 = "legacy"
+SHIPPED_MODEL = "data/stage2_v2.npz"  # trained by `safegate stage2-train`; see README
 
 # Zero-width characters used for evasion
 ZERO_WIDTH_CHARS = set("\u200b\u200c\u200d\ufeff\u00ad\u2060")
@@ -145,16 +152,22 @@ HEURISTIC_RULES: dict[AttackCategory, list[str]] = {
 
 @dataclass(frozen=True)
 class Detection:
-    """Detection result for a prompt injection scan."""
+    """Detection result for a prompt injection scan.
+
+    ``review`` is True when stage 2 abstained: its score fell in the calibrated review band
+    below ``refuse_threshold`` (only the v2 stage 2 produces this).
+    """
 
     score: float
     category: AttackCategory | None
     reasons: list[str] = field(default_factory=list)
+    review: bool = False
+    refuse_threshold: float = 0.5
 
     @property
     def is_injection(self) -> bool:
-        """True if the score exceeds the default injection threshold."""
-        return self.score >= 0.5
+        """True if the score reaches the refuse threshold (0.5 unless stage 2 v2 calibrated it)."""
+        return self.score >= self.refuse_threshold
 
 
 def normalize_text(text: str) -> tuple[str, bool, bool]:
@@ -187,22 +200,28 @@ def check_context_stuffing(text: str) -> bool:
     return False
 
 
-def extract_features(text: str, dim: int = 4096) -> np.ndarray:
-    """Extract hashed character n-gram and word token features with L2 normalization."""
+def legacy_terms(text: str) -> list[str]:
+    """Feature strings of the legacy stage 2: char 3-5-grams of the lowered text plus words."""
     t = f"^{text.lower().strip()}$"
-    ngrams: list[str] = []
+    terms: list[str] = []
     for n in (3, 4, 5):
         for i in range(len(t) - n + 1):
-            ngrams.append(t[i : i + n])
-    words = re.findall(r"\b\w+\b", text.lower())
-    for w in words:
-        ngrams.append(f"w:{w}")
+            terms.append(t[i : i + n])
+    terms.extend(f"w:{w}" for w in re.findall(r"\b\w+\b", text.lower()))
+    return terms
 
+
+def legacy_bucket(term: str, dim: int) -> tuple[int, float]:
+    """Bucket index and sign of a legacy feature string (md5-based)."""
+    h = int(hashlib.md5(term.encode("utf-8")).hexdigest()[:8], 16)
+    return h % dim, 1.0 if (h & 0x80000000) == 0 else -1.0
+
+
+def extract_features(text: str, dim: int = 4096) -> np.ndarray:
+    """Extract hashed character n-gram and word token features with L2 normalization."""
     feat = np.zeros(dim, dtype=np.float32)
-    for ng in ngrams:
-        h = int(hashlib.md5(ng.encode("utf-8")).hexdigest()[:8], 16)
-        idx = h % dim
-        sign = 1.0 if (h & 0x80000000) == 0 else -1.0
+    for term in legacy_terms(text):
+        idx, sign = legacy_bucket(term, dim)
         feat[idx] += sign
 
     norm = float(np.linalg.norm(feat))
@@ -212,19 +231,41 @@ def extract_features(text: str, dim: int = 4096) -> np.ndarray:
 
 
 class InjectionDetector:
-    """Two-stage prompt injection detector combining heuristics and logistic regression."""
+    """Two-stage prompt injection detector combining heuristics and logistic regression.
+
+    ``stage2="legacy"`` (default) is the original dense hashed logistic regression with a fixed
+    ``threshold``. ``stage2="v2"`` is the sparse class-balanced model of :mod:`safegate.stage2`
+    with thresholds calibrated on validation folds and an abstain-to-escalate band; it loads the
+    shipped ``data/stage2_v2.npz`` unless a ``model`` or ``data_path`` is given.
+    """
 
     def __init__(
         self,
         data_path: Path | str | None = None,
         threshold: float = 0.55,
         dim: int = 4096,
+        stage2: str = DEFAULT_STAGE2,
+        model: Stage2Model | None = None,
     ) -> None:
+        if stage2 not in STAGE2_MODES:
+            raise ValueError(f"stage2 must be one of {STAGE2_MODES}, got {stage2!r}")
+        self.stage2 = stage2
         self.threshold = threshold
         self.dim = dim
         self.weights = np.zeros(dim, dtype=np.float32)
         self.bias = 0.0
         self._is_trained = False
+        self.model: Stage2Model | None = model
+
+        if model is not None:
+            if stage2 != "v2":
+                raise ValueError("an explicit model needs stage2='v2'")
+            return
+        if stage2 == "v2" and data_path is None:
+            artifact = Path(str(resources.files("safegate").joinpath(SHIPPED_MODEL)))
+            if artifact.exists():
+                self.model = Stage2Model.load(artifact)
+                return
 
         resolved_data_path: Path | None = None
         if data_path:
@@ -243,7 +284,7 @@ class InjectionDetector:
             self._fit_from_file(resolved_data_path)
 
     def _fit_from_file(self, path: Path) -> None:
-        """Load samples from JSONL and train logistic regression weights."""
+        """Load samples from JSONL and train the stage-2 classifier."""
         samples: list[Sample] = []
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -252,10 +293,27 @@ class InjectionDetector:
                     samples.append(Sample.from_dict(json.loads(line)))
         self.fit(samples)
 
+    def stage2_score(self, text: str) -> float:
+        """Stage-2 probability of attack (0.0 when untrained)."""
+        if self.stage2 == "v2":
+            return self.model.score(text) if self.model is not None else 0.0
+        if not self._is_trained:
+            return 0.0
+        feat = extract_features(text, self.dim)
+        logit = float(feat @ self.weights + self.bias)
+        return 1.0 / (1.0 + float(np.exp(-np.clip(logit, -25.0, 25.0))))
+
     def fit(
         self, samples: list[Sample], epochs: int = 250, lr: float = 0.5, l2_reg: float = 1e-4
     ) -> None:
-        """Fit logistic regression weights on samples."""
+        """Fit stage 2 on samples (``epochs``, ``lr``, ``l2_reg`` apply to the legacy model only).
+
+        v2 chooses its own thresholds on out-of-fold scores of these samples.
+        """
+        if self.stage2 == "v2":
+            if samples:
+                self.model = fit_stage2([s.text for s in samples], [s.is_attack for s in samples])
+            return
         if not samples:
             return
 
@@ -358,11 +416,7 @@ class InjectionDetector:
         stage1_cats, stage1_reasons = self._check_stage1(text)
 
         # Stage 2 statistical score
-        stage2_score = 0.0
-        if self._is_trained:
-            feat = extract_features(text, self.dim)
-            logit = float(feat @ self.weights + self.bias)
-            stage2_score = 1.0 / (1.0 + float(np.exp(-np.clip(logit, -25.0, 25.0))))
+        stage2_score = self.stage2_score(text)
 
         if stage1_cats:
             # Stage 1 found hard heuristic match
@@ -383,8 +437,39 @@ class InjectionDetector:
             )
             return Detection(score=score, category=primary_cat, reasons=stage1_reasons)
 
+        if self.stage2 == "v2":
+            if self.model is None:
+                return Detection(score=0.0, category=None, reasons=[])
+            t = self.model.thresholds
+            if stage2_score >= t.refuse:
+                reasons = [
+                    "Statistical model detected injection pattern "
+                    f"(confidence: {stage2_score:.2f} >= refuse threshold {t.refuse:.2f})"
+                ]
+                return Detection(
+                    score=stage2_score,
+                    category=AttackCategory.INSTRUCTION_OVERRIDE,
+                    reasons=reasons,
+                    refuse_threshold=t.refuse,
+                )
+            if stage2_score >= t.review:
+                reasons = [
+                    "Statistical model abstained: score "
+                    f"{stage2_score:.2f} is in the review band [{t.review:.2f}, {t.refuse:.2f})"
+                ]
+                return Detection(
+                    score=stage2_score,
+                    category=None,
+                    reasons=reasons,
+                    review=True,
+                    refuse_threshold=t.refuse,
+                )
+            return Detection(
+                score=stage2_score, category=None, reasons=[], refuse_threshold=t.refuse
+            )
+
         if stage2_score >= self.threshold:
-            # Stage 2 statistical detector flagged injection
+            # Legacy stage 2 flagged injection
             reasons = [
                 f"Statistical model detected injection pattern (confidence: {stage2_score:.2f})"
             ]

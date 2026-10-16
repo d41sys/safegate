@@ -96,6 +96,14 @@ rules:
     action: redact
     priority: 55
 
+  - id: escalate-detector-uncertain
+    description: "Stage 2 abstains (score in the calibrated review band): escalate to human review"
+    applies_to: input
+    match:
+      detector_review: true
+    action: escalate
+    priority: 50
+
   - id: escalate-admin-override
     description: "Escalate administrative override requests to human review"
     applies_to: input

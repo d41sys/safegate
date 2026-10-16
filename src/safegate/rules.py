@@ -28,7 +28,7 @@ ACTION_PRECEDENCE: dict[RuleAction, int] = {
 }
 
 ALLOWED_RULE_KEYS = {"id", "description", "applies_to", "match", "action", "priority"}
-ALLOWED_MATCH_KEYS = {"regex", "classifier_category", "detector_category"}
+ALLOWED_MATCH_KEYS = {"regex", "classifier_category", "detector_category", "detector_review"}
 
 
 class RuleConfigError(ValueError):
@@ -42,6 +42,7 @@ class RuleMatch:
     regex: str | None = None
     classifier_category: str | None = None
     detector_category: str | None = None
+    detector_review: bool = False
 
     def __post_init__(self) -> None:
         if self.regex:
@@ -100,6 +101,10 @@ class Rule:
 
         priority = int(data.get("priority", 0))
 
+        review = match_data.get("detector_review", False)
+        if not isinstance(review, bool):
+            raise RuleConfigError("match.detector_review must be true or false")
+
         match_obj = RuleMatch(
             regex=str(match_data["regex"])
             if "regex" in match_data and match_data["regex"] is not None
@@ -110,6 +115,7 @@ class Rule:
             detector_category=str(match_data["detector_category"])
             if "detector_category" in match_data and match_data["detector_category"] is not None
             else None,
+            detector_review=review,
         )
 
         return cls(
@@ -145,7 +151,7 @@ class Rule:
             if detection.category.value.upper() != self.match.detector_category.upper():
                 return False
 
-        return True
+        return not (self.match.detector_review and not (detection and detection.review))
 
 
 @dataclass

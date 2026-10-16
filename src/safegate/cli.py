@@ -22,11 +22,26 @@ from safegate.external import (
     shorten,
 )
 from safegate.gate import SafetyGate
-from safegate.injection import InjectionDetector
+from safegate.injection import DEFAULT_STAGE2, STAGE2_MODES, InjectionDetector
 from safegate.mock_llm import MockStreamingLLM
 from safegate.refusal import RefusalEvaluator
 from safegate.spec import check_spec, load_spec_policy
+from safegate.stage2_eval import (
+    DATASET_KEYS,
+    Pool,
+    dev_grid,
+    fit_v2,
+    print_dev_grid,
+    print_diagnosis,
+    print_scenarios,
+    scenarios,
+)
 from safegate.taxonomy import Sample
+
+
+def _detector(args: argparse.Namespace) -> InjectionDetector:
+    """The detector selected by ``--stage2`` (v2 shipped model by default)."""
+    return InjectionDetector(stage2=args.stage2)
 
 
 def _load_bundled_samples() -> list[Sample]:
@@ -53,7 +68,7 @@ def _load_bundled_samples() -> list[Sample]:
 
 def cmd_check(args: argparse.Namespace) -> int:
     """Check a single piece of text against the safety gate."""
-    gate = SafetyGate()
+    gate = SafetyGate(detector=_detector(args))
     decision = gate.check_input(args.text)
 
     print(f"action:   {decision.action}")
@@ -72,7 +87,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Run one prompt through all three checkpoints against the mock streaming LLM."""
-    gate = SafetyGate()
+    gate = SafetyGate(detector=_detector(args))
     output, trace = gate.run(args.prompt, MockStreamingLLM())
     print(f"output: {output.strip()}")
     print(f"final action: {trace.final_action}")
@@ -95,7 +110,7 @@ def cmd_redteam(args: argparse.Namespace) -> int:
     train_samples = [samples[i] for i in train_idx]
     test_samples = [samples[i] for i in test_idx]
 
-    detector = InjectionDetector(data_path=None)
+    detector = InjectionDetector(data_path=None, stage2=args.stage2)
     detector.fit(train_samples)
 
     report = detector.evaluate(test_samples)
@@ -141,7 +156,7 @@ def cmd_redteam(args: argparse.Namespace) -> int:
 
 def cmd_refusal_eval(args: argparse.Namespace) -> int:
     """Run the refusal evaluation harness against the default safety gate."""
-    gate = SafetyGate()
+    gate = SafetyGate(detector=_detector(args))
     evaluator = RefusalEvaluator()
     report = evaluator.evaluate_gate(gate)
 
@@ -260,20 +275,33 @@ def cmd_external_eval(args: argparse.Namespace) -> int:
     data = load_dataset(DATASETS[args.dataset], cache_dir=args.cache_dir, refresh=args.refresh)
     _print_dataset_header(data)
 
-    shipped = InjectionDetector()
+    shipped = _detector(args)
+    gate_label = "full gate (`check_input`, refuse/escalate = block)"
     test, everything = data.split("test"), data.samples
-    zero_shot_all = [
-        _detector_outcome("detector alone", shipped, everything),
-        _gate_outcome("full gate (`check_input`, refuse/escalate = block)", shipped, everything),
-    ]
     zero_shot_test = [
         _detector_outcome("detector alone", shipped, test),
-        _gate_outcome("full gate (`check_input`, refuse/escalate = block)", shipped, test),
+        _gate_outcome(gate_label, shipped, test),
     ]
-    print("Shipped detector and gate: nothing here was fitted on this data.\n")
-    _print_outcome_table(f"Shipped, TEST split only (n={len(test)})", zero_shot_test)
-    _print_outcome_table(f"Shipped, TRAIN+TEST (n={len(everything)})", zero_shot_all)
-    _print_language_table(zero_shot_all)
+    if args.stage2 == "legacy":
+        zero_shot_all = [
+            _detector_outcome("detector alone", shipped, everything),
+            _gate_outcome(gate_label, shipped, everything),
+        ]
+        print("Legacy stage 2, bundled data only: nothing here was fitted on this data.\n")
+        _print_outcome_table(f"Shipped, TEST split only (n={len(test)})", zero_shot_test)
+        _print_outcome_table(f"Shipped, TRAIN+TEST (n={len(everything)})", zero_shot_all)
+        _print_language_table(zero_shot_all)
+        error_sets = [("full gate", zero_shot_all[1]), ("detector alone", zero_shot_all[0])]
+        error_scope = "TRAIN+TEST"
+    else:
+        print(
+            "Shipped v2 stage 2 was fitted on the bundled set plus the TRAIN splits of deepset "
+            "and jailbreak; only the TEST split below is held out.\n"
+        )
+        _print_outcome_table(f"Shipped v2, TEST split only (n={len(test)})", zero_shot_test)
+        _print_language_table(zero_shot_test)
+        error_sets = [("full gate", zero_shot_test[1]), ("detector alone", zero_shot_test[0])]
+        error_scope = "TEST"
 
     if not args.no_retrain:
         train = data.split("train")
@@ -285,16 +313,75 @@ def cmd_external_eval(args: argparse.Namespace) -> int:
         ]
         outcomes: list[Outcome] = []
         for label, fit_samples in variants:
-            det = InjectionDetector()
-            det.fit(fit_samples)
+            if args.stage2 == "v2":
+                only_ext = fit_samples is external_train
+                det = InjectionDetector(
+                    stage2="v2", model=fit_v2([] if only_ext else bundled, train)
+                )
+            else:
+                det = InjectionDetector(stage2="legacy")
+                det.fit(fit_samples)
             outcomes.append(_detector_outcome(f"detector alone, {label}", det, test))
             outcomes.append(_gate_outcome(f"full gate, {label}", det, test))
         print("Retrained variants (separate rows: stage 2 fitted on TRAIN, scored on TEST).\n")
         _print_outcome_table(f"RETRAINED on TRAIN, scored on TEST (n={len(test)})", outcomes)
 
     if args.errors > 0:
-        _print_errors("shipped full gate on TRAIN+TEST", zero_shot_all[1], args.errors)
-        _print_errors("shipped detector alone on TRAIN+TEST", zero_shot_all[0], args.errors)
+        for name, outcome in error_sets:
+            _print_errors(f"shipped {name} on {error_scope}", outcome, args.errors)
+    return 0
+
+
+def _load_pools(cache_dir: str) -> dict[str, Pool]:
+    pools: dict[str, Pool] = {}
+    for key in DATASET_KEYS:
+        data = load_dataset(DATASETS[key], cache_dir=cache_dir)
+        pools[key] = Pool(key, data.split("train"), data.split("test"))
+    return pools
+
+
+def cmd_stage2_report(args: argparse.Namespace) -> int:
+    """Diagnose the legacy stage 2, run the dev grid, and score the protocol's scenarios."""
+    bundled = _load_bundled_samples()
+    # Diagnosis and dev grid read TRAIN splits only; only `protocol` scores TEST.
+    pools = _load_pools(args.cache_dir)
+    sections = set(args.section) if args.section else {"diagnose", "protocol"}
+    if "diagnose" in sections:
+        print("## Diagnosis of the legacy stage 2 (TRAIN splits only)\n")
+        print_diagnosis(bundled, pools, sys.stdout)
+    if "dev-grid" in sections:
+        print("## Model selection on TRAIN splits only (AUC; TEST splits not read)\n")
+        print_dev_grid(dev_grid(bundled, pools, log=sys.stderr), sys.stdout)
+        print()
+    if "protocol" in sections:
+        print("## Protocol scenarios, scored once on TEST splits\n")
+        print_scenarios(
+            scenarios(bundled, pools, shipped=InjectionDetector(stage2="v2"), log=sys.stderr),
+            sys.stdout,
+        )
+    return 0
+
+
+def cmd_stage2_train(args: argparse.Namespace) -> int:
+    """Fit the shipped v2 model (bundled + deepset TRAIN + jailbreak TRAIN) and save it."""
+    bundled = _load_bundled_samples()
+    pools = _load_pools(args.cache_dir)
+    model = fit_v2(bundled, pools["deepset"].train + pools["jailbreak"].train)
+    meta = {
+        "trained_on": ["bundled injection_train.jsonl", "deepset TRAIN", "jailbreak TRAIN"],
+        "datasets": {
+            k: {
+                "hf_id": DATASETS[k].hf_id,
+                "revision": DATASETS[k].revision,
+                "licence": DATASETS[k].license,
+            }
+            for k in DATASET_KEYS
+        },
+        "n_rows": len(bundled) + sum(len(pools[k].train) for k in DATASET_KEYS),
+    }
+    model.save(args.out, meta)
+    t = model.thresholds
+    print(f"wrote {args.out}: review {t.review:.4f}, refuse {t.refuse:.4f}")
     return 0
 
 
@@ -337,13 +424,24 @@ def build_parser() -> argparse.ArgumentParser:
         description="Constitutional safety gate for LLM input/output filtering",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    stage2_opt = argparse.ArgumentParser(add_help=False)
+    stage2_opt.add_argument(
+        "--stage2",
+        choices=STAGE2_MODES,
+        default=DEFAULT_STAGE2,
+        help="stage-2 model: legacy (default) or v2 (calibrated thresholds, abstain band)",
+    )
 
-    p_check = sub.add_parser("check", help="Check a single text input against the safety gate")
+    p_check = sub.add_parser(
+        "check", parents=[stage2_opt], help="Check a single text input against the safety gate"
+    )
     p_check.add_argument("text", type=str, help="Text to check")
     p_check.set_defaults(func=cmd_check)
 
     p_run = sub.add_parser(
-        "run", help="Run a prompt through pre-gen, during-gen and post-gen (mock LLM)"
+        "run",
+        parents=[stage2_opt],
+        help="Run a prompt through pre-gen, during-gen and post-gen (mock LLM)",
     )
     p_run.add_argument("prompt", type=str, help="Prompt text")
     p_run.add_argument("--trace", action="store_true", help="Print the per-request JSON trace")
@@ -351,18 +449,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_red = sub.add_parser(
         "redteam",
+        parents=[stage2_opt],
         help="Run red-team detection evaluation on held-out samples",
     )
     p_red.set_defaults(func=cmd_redteam)
 
     p_ref = sub.add_parser(
         "refusal-eval",
+        parents=[stage2_opt],
         help="Evaluate refusal rate, over-refusal rate, and refusal quality",
     )
     p_ref.set_defaults(func=cmd_refusal_eval)
 
     p_ext = sub.add_parser(
         "external-eval",
+        parents=[stage2_opt],
         help="Evaluate the shipped detector and gate on a public labelled dataset (downloads)",
     )
     p_ext.add_argument("--dataset", choices=sorted(DATASETS), required=True)
@@ -371,6 +472,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_ext.add_argument("--no-retrain", action="store_true", help="skip the retrained variants")
     p_ext.add_argument("--errors", type=int, default=5, help="false negatives/positives to list")
     p_ext.set_defaults(func=cmd_external_eval)
+
+    p_rep = sub.add_parser(
+        "stage2-report",
+        help="Diagnose legacy stage 2, select v2 on TRAIN, score the protocol on TEST (needs data)",
+    )
+    p_rep.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
+    p_rep.add_argument(
+        "--section",
+        action="append",
+        choices=("diagnose", "dev-grid", "protocol"),
+        help="repeatable; default: diagnose + protocol (dev-grid takes about 10 minutes)",
+    )
+    p_rep.set_defaults(func=cmd_stage2_report)
+
+    p_trn = sub.add_parser(
+        "stage2-train",
+        help="Fit the shipped v2 model on bundled + public TRAIN splits and save it",
+    )
+    p_trn.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
+    p_trn.add_argument("--out", default="src/safegate/data/stage2_v2.npz")
+    p_trn.set_defaults(func=cmd_stage2_train)
 
     p_spec = sub.add_parser(
         "spec-check",
