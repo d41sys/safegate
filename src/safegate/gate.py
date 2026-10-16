@@ -204,7 +204,8 @@ class SafetyGate:
                         else:
                             redacted = f"[REDACTED:{rule.id}]"
 
-            return highest_action, violating_rules, redacted
+            # Catch-all allow rules match everything; keep them out of decisions and traces.
+            return highest_action, [r for r in violating_rules if r.action != "allow"], redacted
 
         def note(action: str, rules: list[Rule], chunk_index: int) -> None:
             if trace is not None and action != "allow":
@@ -212,7 +213,7 @@ class SafetyGate:
                     Checkpoint(
                         stage="during_gen",
                         action=action,
-                        rule_ids=[r.id for r in rules if r.action != "allow"],
+                        rule_ids=[r.id for r in rules],
                         signals={"chunk_index": chunk_index},
                         elapsed_ms=trace.elapsed_ms(),
                     )
