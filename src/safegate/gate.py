@@ -212,7 +212,7 @@ class SafetyGate:
                     Checkpoint(
                         stage="during_gen",
                         action=action,
-                        rule_ids=[r.id for r in rules],
+                        rule_ids=[r.id for r in rules if r.action != "allow"],
                         signals={"chunk_index": chunk_index},
                         elapsed_ms=trace.elapsed_ms(),
                     )
