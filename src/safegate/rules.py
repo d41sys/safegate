@@ -13,14 +13,17 @@ import yaml
 from safegate.classifier import ContentClassificationResult
 from safegate.injection import Detection
 
-RuleAction = Literal["allow", "redact", "refuse", "escalate"]
+# Course vocabulary (lesson 87): block / redact / warn / allow. "refuse" is the block
+# action; "escalate" blocks and routes the request to a human reviewer.
+RuleAction = Literal["allow", "warn", "redact", "refuse", "escalate"]
 AppliesTo = Literal["input", "output", "both"]
 
-# Tie-break priority when rule priorities are equal
+# Tie-break priority when rule priorities are equal; also the severity order.
 ACTION_PRECEDENCE: dict[RuleAction, int] = {
-    "refuse": 4,
-    "escalate": 3,
-    "redact": 2,
+    "refuse": 5,
+    "escalate": 4,
+    "redact": 3,
+    "warn": 2,
     "allow": 1,
 }
 
@@ -82,9 +85,9 @@ class Rule:
             )
 
         action = data["action"]
-        if action not in ("allow", "redact", "refuse", "escalate"):
+        if action not in ACTION_PRECEDENCE:
             raise RuleConfigError(
-                f"Invalid action '{action}'; must be allow, redact, refuse, or escalate"
+                f"Invalid action '{action}'; must be one of {', '.join(ACTION_PRECEDENCE)}"
             )
 
         match_data = data["match"]

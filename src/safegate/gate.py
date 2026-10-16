@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -16,17 +17,60 @@ from safegate.classifier import (
 )
 from safegate.injection import InjectionDetector
 from safegate.rules import (
+    ACTION_PRECEDENCE,
     Rule,
     RulesEngine,
     get_default_rules_path,
 )
+
+WITHHELD_MESSAGE = "\n[response withheld by safety gate]"
+_SEVERITY: dict[str, int] = {action: rank for action, rank in ACTION_PRECEDENCE.items()}
+
+
+@dataclass
+class Checkpoint:
+    """One gate checkpoint in a request: what it saw and what it decided."""
+
+    stage: str  # "pre_gen", "during_gen", "post_gen"
+    action: str
+    rule_ids: list[str]
+    signals: dict[str, Any]
+    elapsed_ms: float
+
+
+@dataclass
+class RequestTrace:
+    """Per-request audit trace across the three checkpoints (lesson 87)."""
+
+    request_id: str
+    prompt_preview: str
+    checkpoints: list[Checkpoint] = field(default_factory=list)
+    final_action: str = "allow"
+    total_ms: float = 0.0
+    started: float = field(default_factory=time.perf_counter, repr=False)
+
+    def elapsed_ms(self) -> float:
+        """Milliseconds since the request started."""
+        return (time.perf_counter() - self.started) * 1000
+
+    def record(self, checkpoint: Checkpoint) -> None:
+        """Append a checkpoint and raise the final action if it is more severe."""
+        self.checkpoints.append(checkpoint)
+        if _SEVERITY[checkpoint.action] > _SEVERITY[self.final_action]:
+            self.final_action = checkpoint.action
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to plain JSON-compatible types (without the internal clock)."""
+        data = asdict(self)
+        del data["started"]
+        return data
 
 
 @dataclass(frozen=True)
 class Decision:
     """Safety policy decision for a scanned input or output."""
 
-    action: str  # "allow", "redact", "refuse", "escalate"
+    action: str  # "allow", "warn", "redact", "refuse" (= block), "escalate"
     rule_ids: list[str]
     reasons: list[str]
     sanitized_text: str | None = None
@@ -127,10 +171,15 @@ class SafetyGate:
         self._log_decision("input", text, decision)
         return decision
 
-    def stream_output(self, chunks: Iterable[str]) -> Iterator[str]:
-        """Filter a stream through a sliding buffer; stop early on a mid-stream refuse."""
+    def stream_output(
+        self, chunks: Iterable[str], trace: RequestTrace | None = None
+    ) -> Iterator[str]:
+        """Filter a stream through a sliding buffer; stop early on a mid-stream refuse.
+
+        With ``trace``, every chunk that triggers an output rule is recorded as a
+        ``during_gen`` checkpoint.
+        """
         buf = ""
-        withheld_msg = "\n[response withheld by safety gate]"
 
         output_rules = [r for r in self.rules_engine.rules if r.applies_to in ("output", "both")]
 
@@ -139,12 +188,11 @@ class SafetyGate:
             redacted = content
             violating_rules: list[Rule] = []
             highest_action = "allow"
-            action_rank = {"refuse": 4, "escalate": 3, "redact": 2, "allow": 1}
 
             for rule in output_rules:
                 if rule.matches(redacted):
                     violating_rules.append(rule)
-                    if action_rank[rule.action] > action_rank[highest_action]:
+                    if _SEVERITY[rule.action] > _SEVERITY[highest_action]:
                         highest_action = rule.action
                     if rule.action == "redact":
                         if rule.match.regex:
@@ -158,9 +206,23 @@ class SafetyGate:
 
             return highest_action, violating_rules, redacted
 
-        for chunk in chunks:
+        def note(action: str, rules: list[Rule], chunk_index: int) -> None:
+            if trace is not None and action != "allow":
+                trace.record(
+                    Checkpoint(
+                        stage="during_gen",
+                        action=action,
+                        rule_ids=[r.id for r in rules],
+                        signals={"chunk_index": chunk_index},
+                        elapsed_ms=trace.elapsed_ms(),
+                    )
+                )
+
+        index = -1
+        for index, chunk in enumerate(chunks):
             buf += chunk
             action, matched_rules, redacted_buf = evaluate_buffer(buf)
+            note(action, matched_rules, index)
 
             if action == "refuse":
                 dec = Decision(
@@ -169,7 +231,7 @@ class SafetyGate:
                     reasons=[f"Output safety violation: {r.description}" for r in matched_rules],
                 )
                 self._log_decision("output", buf, dec)
-                yield withheld_msg
+                yield WITHHELD_MESSAGE
                 return
 
             if action == "redact":
@@ -185,17 +247,90 @@ class SafetyGate:
         if buf:
             action, matched_rules, redacted_buf = evaluate_buffer(buf)
             if action == "refuse":
+                note(action, matched_rules, index)
                 dec = Decision(
                     action="refuse",
                     rule_ids=[r.id for r in matched_rules],
                     reasons=[f"Output safety violation: {r.description}" for r in matched_rules],
                 )
                 self._log_decision("output", buf, dec)
-                yield withheld_msg
+                yield WITHHELD_MESSAGE
                 return
             if action == "redact":
                 buf = redacted_buf
             yield buf
+
+    @staticmethod
+    def _input_block_message(decision: Decision) -> str | None:
+        """Text returned instead of calling the model, or None when the model may run."""
+        if decision.action == "refuse":
+            return "I cannot fulfill this request due to safety policies: " + ", ".join(
+                decision.reasons
+            )
+        if decision.action == "escalate":
+            return "This request has been escalated for administrative review: " + ", ".join(
+                decision.reasons
+            )
+        return None
+
+    @staticmethod
+    def _effective_prompt(prompt: str, decision: Decision) -> str:
+        if decision.action == "redact" and decision.sanitized_text:
+            return decision.sanitized_text
+        return prompt
+
+    def run(self, prompt: str, llm_fn: Callable[[str], Iterable[str]]) -> tuple[str, RequestTrace]:
+        """Run one request through pre-gen, during-gen and post-gen checks.
+
+        Returns the text the caller may show and the per-request trace.
+        """
+        trace = RequestTrace(request_id=uuid.uuid4().hex, prompt_preview=prompt[:100])
+        elapsed = trace.elapsed_ms
+        decision = self.check_input(prompt)
+        trace.record(
+            Checkpoint(
+                stage="pre_gen",
+                action=decision.action,
+                rule_ids=decision.rule_ids,
+                signals={
+                    "detector_score": decision.score,
+                    "category": decision.category,
+                    "classifier_flagged": decision.metadata.get("classifier_flagged", False),
+                },
+                elapsed_ms=elapsed(),
+            )
+        )
+        blocked = self._input_block_message(decision)
+        if blocked is not None:
+            trace.total_ms = elapsed()
+            return blocked, trace
+
+        stream = llm_fn(self._effective_prompt(prompt, decision))
+        output = "".join(self.stream_output(stream, trace))
+        if output == WITHHELD_MESSAGE:
+            trace.total_ms = elapsed()
+            return output, trace
+
+        classification = self.classifier.classify(output)
+        result = self.rules_engine.evaluate(output, "output", classification=classification)
+        trace.record(
+            Checkpoint(
+                stage="post_gen",
+                action=result.action,
+                rule_ids=[r.id for r in result.matched_rules],
+                signals={
+                    "classifier_flagged": classification.flagged,
+                    "classifier_max": max(classification.categories.values(), default=0.0),
+                },
+                elapsed_ms=elapsed(),
+            )
+        )
+        if result.action in ("refuse", "escalate"):
+            output = WITHHELD_MESSAGE
+        elif result.action == "redact" and result.redacted_text is not None:
+            output = result.redacted_text
+        trace.total_ms = elapsed()
+        return output, trace
 
     def wrap(
         self,
@@ -205,28 +340,11 @@ class SafetyGate:
 
         def wrapped_llm(prompt: str) -> Iterator[str]:
             input_decision = self.check_input(prompt)
-
-            if input_decision.action == "refuse":
-                yield (
-                    "I cannot fulfill this request due to safety policies: "
-                    + ", ".join(input_decision.reasons)
-                )
+            blocked = self._input_block_message(input_decision)
+            if blocked is not None:
+                yield blocked
                 return
-
-            if input_decision.action == "escalate":
-                yield (
-                    "This request has been escalated for administrative review: "
-                    + ", ".join(input_decision.reasons)
-                )
-                return
-
-            effective_prompt = (
-                input_decision.sanitized_text
-                if input_decision.action == "redact" and input_decision.sanitized_text
-                else prompt
-            )
-
-            raw_stream = llm_fn(effective_prompt)
+            raw_stream = llm_fn(self._effective_prompt(prompt, input_decision))
             yield from self.stream_output(raw_stream)
 
         return wrapped_llm

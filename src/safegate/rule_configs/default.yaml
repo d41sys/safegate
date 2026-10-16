@@ -144,6 +144,14 @@ rules:
     action: refuse
     priority: 85
 
+  - id: warn-professional-advice
+    description: "Flag requests for medical, legal or investment advice (answer allowed, flagged)"
+    applies_to: input
+    match:
+      regex: "(?i)\\b(dosage|prescription|diagnos(e|is)|legal advice|investment advice)\\b"
+    action: warn
+    priority: 20
+
   - id: default-allow
     description: "Permit benign requests that do not trigger higher-priority policies"
     applies_to: both

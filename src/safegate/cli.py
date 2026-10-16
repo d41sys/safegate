@@ -12,6 +12,7 @@ import numpy as np
 
 from safegate.gate import SafetyGate
 from safegate.injection import InjectionDetector
+from safegate.mock_llm import MockStreamingLLM
 from safegate.refusal import RefusalEvaluator
 from safegate.taxonomy import Sample
 
@@ -54,6 +55,17 @@ def cmd_check(args: argparse.Namespace) -> int:
             print(f"  - {r}")
     if decision.sanitized_text is not None:
         print(f"sanitized: {decision.sanitized_text}")
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Run one prompt through all three checkpoints against the mock streaming LLM."""
+    gate = SafetyGate()
+    output, trace = gate.run(args.prompt, MockStreamingLLM())
+    print(f"output: {output.strip()}")
+    print(f"final action: {trace.final_action}")
+    if args.trace:
+        print(json.dumps(trace.to_dict(), indent=2))
     return 0
 
 
@@ -149,6 +161,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_check = sub.add_parser("check", help="Check a single text input against the safety gate")
     p_check.add_argument("text", type=str, help="Text to check")
     p_check.set_defaults(func=cmd_check)
+
+    p_run = sub.add_parser(
+        "run", help="Run a prompt through pre-gen, during-gen and post-gen (mock LLM)"
+    )
+    p_run.add_argument("prompt", type=str, help="Prompt text")
+    p_run.add_argument("--trace", action="store_true", help="Print the per-request JSON trace")
+    p_run.set_defaults(func=cmd_run)
 
     p_red = sub.add_parser(
         "redteam",
