@@ -131,6 +131,37 @@ Stage-1 regexes are English only, so German attacks mostly get through the gate.
 
 Retraining removes almost all false positives, which points at distribution shift in the shipped stage 2 [INFERENCE], but the logistic regression does not learn deepset's attacks from 203 examples: detection stays at 23% to 42%. Jailbreak prompts are long, DAN-style and lexically distinctive, so 4096 hashed n-gram features learn them well (88% to 94%).
 
+### Stage 2 v2: protocol (written before any v2 score on a TEST split)
+
+Problem stated by the tables above: the shipped stage 2 causes nearly all benign false positives on public data, and German attacks are mostly missed. This section fixes how the replacement ("v2") is built and judged *before* any v2 number on a TEST split exists. Commit order in `git log` shows it.
+
+**Data allowed for fitting:** the 403 bundled synthetic samples, plus the TRAIN splits of deepset (apache-2.0) and jailbreak (apache-2.0). No TEST split is used for fitting, feature design, hyper-parameter choice, threshold choice or stopping. The diagnosis below reads TRAIN rows only.
+
+**Changes under test** (stage 1 regexes and the rules are not touched; v2 adds one rule, `escalate-detector-uncertain`):
+
+1. Features: casefolded word tokens plus word-bounded character 3-5-grams, sub-linear term frequency, signed hashing into 65,536 buckets (the legacy model has 4,096 buckets and 55 to 80 distinct feature strings per bucket). Character n-grams also match German word forms that share a stem.
+2. Training: class-balanced loss, L2, full-batch Adam, pure numpy on a sparse layout.
+3. Decision: two thresholds picked on **validation scores cut from TRAIN data** (5-fold out-of-fold scores, folds stratified by label, seed 0). `refuse` = lowest score cut-off with validation FPR ≤ 2%; `review` = lowest cut-off with validation FPR ≤ 10%. Scores in `[review, refuse)` are an abstain band: the gate **escalates** (human review) instead of refusing. When public rows are in the training set, only their out-of-fold scores pick the thresholds, because the synthetic prompts are easy and would make the band too lenient. The 2% and 10% budgets were fixed here, not tuned.
+
+**Model selection (TRAIN only, `safegate stage2-report --section dev-grid`):** feature layout × class weighting × L2 are scored by AUC on four dev tasks: 5-fold CV inside each dataset's TRAIN split (bundled data always in the training folds), and training on one dataset's TRAIN split then scoring the *other* dataset's TRAIN split. Rule: pick the configuration with the highest mean cross-dataset dev AUC; ties go to in-domain AUC, then to the balanced loss. Caveat fixed in advance: the cross-dataset dev tasks see both datasets' TRAIN splits, so the three hyper-parameters are not blind to the other dataset's style. The test-time cross-dataset rows still never fit on the scored dataset.
+
+**Scenarios, each scored once per system on a TEST split** (legacy = the original stage 2 refit on the same rows, with its fixed 0.5 / 0.55 cut-offs; the shipped legacy model is "bundled only"):
+
+| Id | Stage 2 trained on | Scored on | What it answers |
+| --- | --- | --- | --- |
+| (a1) | bundled + deepset TRAIN | deepset TEST | in-domain |
+| (a2) | bundled + jailbreak TRAIN | jailbreak TEST | in-domain |
+| (b1) | bundled + deepset TRAIN | jailbreak TEST | **cross-dataset: the honest generalisation number** |
+| (b2) | bundled + jailbreak TRAIN | deepset TEST | **cross-dataset: the honest generalisation number** |
+| (c1), (c2) | bundled only | deepset TEST, jailbreak TEST | v2 with the same data the shipped legacy model saw |
+| (d1), (d2) | bundled + deepset TRAIN + jailbreak TRAIN (the file that would ship) | deepset TEST, jailbreak TEST | shipped-default candidate; each TEST set is in-domain-plus |
+
+**Metrics:** detection rate on attacks and false-positive rate on benign, both with Wilson 95% intervals, for the detector alone and for the full gate (`SafetyGate.check_input`), plus a per-language split of deepset TEST (stop-word heuristic `guess_language`). Because v2 has three outcomes, each is reported two ways: "refuse" counts only hard blocks, "refuse or review" / "refuse or escalate" also counts the abstain band (the latter is the definition used in the tables above).
+
+**Decision rule for the shipped default, fixed now:** v2 becomes the default only if, in *both* cross-dataset scenarios (b1, b2), the v2 full gate (refuse only) has a higher Youden's J (detection rate minus false-positive rate) than the shipped legacy full gate on the same TEST set, which is 48.3% − 26.8% = 21.5 points on deepset and 78.4% − 59.3% = 19.1 points on jailbreak (rows in the table above). Otherwise legacy stays the default and v2 stays selectable (`--stage2 v2`). The old model stays selectable either way (`--stage2 legacy`).
+
+**Stated limits:** stage 1 is unchanged, so its regex false positives on jailbreak persona prompts remain (`block-jailbreak-roleplay` caused 11 of the earlier jailbreak false positives, `block-context-stuffing` 4); German attack phrasing that no regex covers can only be caught by stage 2.
+
 ### Secondary: self-authored set (in-distribution)
 
 All of the numbers in this subsection come from the runs below (macOS arm64, Python 3.12, seed 0).
