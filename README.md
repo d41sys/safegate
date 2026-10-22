@@ -420,6 +420,41 @@ The in-distribution false-positive rate rises from 0/42 to 3/42 (CIs overlap) be
 
 **Limits.** (1) Three hyper-parameters were chosen with both datasets' TRAIN splits visible, so the cross-dataset rows are not blind to the other dataset's style. (2) (d1) and (d2) are in-domain-plus: the file saw that dataset's TRAIN split. (3) Stage 1 is unchanged: its regex false positives on jailbreak persona prompts put a floor under the full-gate FPR there. (4) Small test sets: 60 attacks and 56 benign prompts for deepset. (5) The 2% / 10% validation budgets were fixed before scoring and not tuned; the AUC lines show that the ranking transfers better than the thresholds, which points at a shift in the score scale between datasets [INFERENCE, not tested separately].
 
+### Pooled stage 2 (leave-one-dataset-out): protocol (written before any LODO score on a TEST split)
+
+Problem stated by the v2 results above: v2 wins in-domain (deepset: 70.0% detection at 1.8% FPR with escalation) but its thresholds do not transfer (deepset to jailbreak: 74.8% FPR), and each v2 model saw only one or two public datasets. Hypothesis under test: **a stage 2 fitted on the pooled TRAIN splits of several datasets, with thresholds picked on a pooled validation split, transfers to a dataset it never saw.** This section fixes the test before any LODO number on a TEST split exists; `git log` shows the code commit and this commit precede every results commit. Nothing is changed and re-scored after the first scoring run: a negative result is reported as is.
+
+**Datasets considered** (licence read on the dataset card on 2026-10-23; revisions are the Hugging Face commit shas at that date):
+
+| Dataset | Licence on the card | Decision |
+| --- | --- | --- |
+| [TrustAIRLab/in-the-wild-jailbreak-prompts](https://huggingface.co/datasets/TrustAIRLab/in-the-wild-jailbreak-prompts) (`itw`), configs `jailbreak_2023_12_25` + `regular_2023_12_25`, revision `a10aab8eff1c73165a442d4464dce192bd28b9c5` | mit | **used.** Human-collected jailbreaks vs ordinary prompts from the same platforms (hard negatives: persona and role-play prompts). No official split. |
+| [neuralchemy/Prompt-injection-dataset](https://huggingface.co/datasets/neuralchemy/Prompt-injection-dataset) (`neuralchemy`), config `core`, revision `7d70432dfcf47a821612cbf9d34e9d9e3ad20e75` | apache-2.0 | **used, with a filter.** The card's own source table lists "WildGuard / JudgeComparison" as licence "Research", so rows with `source = wildguard_judgecomp` are dropped (the other sources are Apache 2.0, CC BY 4.0 HackAPrompt, MIT HarmBench). Official train and test splits are used; its validation split is not used. |
+| [xTRam1/safe-guard-prompt-injection](https://huggingface.co/datasets/xTRam1/safe-guard-prompt-injection) | none (no `license` key on the card) | **not used:** no verifiable permissive licence. |
+| [reshabhs/SPML_Chatbot_Prompt_Injection](https://huggingface.co/datasets/reshabhs/SPML_Chatbot_Prompt_Injection) | mit | **not used:** the card says it is not advisable as a training source, and its label depends on the paired system prompt, which a prompt-only detector never sees. |
+| [Lakera/gandalf_ignore_instructions](https://huggingface.co/datasets/Lakera/gandalf_ignore_instructions) | mit | **not used:** attack-only, so it has no FPR to hold out; added to the training pool next to a benign-only set it would make "which dataset" a perfect proxy for the label. |
+| [fka/awesome-chatgpt-prompts](https://huggingface.co/datasets/fka/awesome-chatgpt-prompts) (now `fka/prompts.chat`) | cc0-1.0 | **not used on its own:** benign-only, same reason as above. Its prompts reach the pool through `itw`, which collected 166 of them as regular prompts. |
+
+The loaders reuse the cached-download pattern of `external.py` (`data/raw/`, gitignored; nothing third-party is committed). `itw` has no split, so TEST = `sha1(text) % 5 == 0` after de-duplication and removal of texts carrying both labels, and its benign rows are cut deterministically (smallest `sha1`) to 2 per attack. Sizes after loading: deepset 546 / 116 (TRAIN / TEST rows), jailbreak 1044 / 262, itw 3210 / 765, neuralchemy 4180 / 899 (`uv run safegate lodo-report --section splits` prints them, with attack/benign counts, and scores nothing).
+
+**Protocol.**
+
+1. **Held-out datasets:** deepset, jailbreak, itw, neuralchemy, one at a time. The held-out dataset's TEST split is scored; its TRAIN split is not used for that fold.
+2. **Training rows for a fold:** the 403 bundled samples plus the TRAIN splits of the other three datasets, each cut to at most 1,000 attacks and 1,000 benign rows (smallest `sha1`; so neuralchemy and itw cannot dominate by size), minus every text that also occurs in the held-out TEST split (case and whitespace folded), then de-duplicated across datasets (label conflicts dropped). The counts removed per fold are printed.
+3. **Model:** the already selected v2 configuration, unchanged and not re-tuned (`char3-5 + word1`, class-balanced, L2 = 0.01); no hyper-parameter, feature or cap is chosen on any TEST split.
+4. **Thresholds from a pooled validation split cut from TRAIN:** 5-fold out-of-fold scores (stratified by label, seed 0) over the pooled public rows; `refuse` = lowest cut-off with pooled validation FPR ≤ 2%, `review` = lowest cut-off with FPR ≤ 10% (the same budgets as before; the synthetic rows do not enter the calibration).
+5. **Systems scored on every held-out TEST split:** (i) shipped legacy (bundled data only, fixed 0.5 / 0.55; the incumbent default), (ii) **v2-single**: v2 trained on the bundled set plus one other dataset's TRAIN split, once per source (3 per held-out dataset), (iii) **v2 pooled**, (iv) legacy refit on the pooled rows (ablation: does the data or the model help?).
+6. **Metrics:** detection rate on attacks and FPR on benign with Wilson 95% intervals, for the detector alone and the full gate (`SafetyGate.check_input`), both with refuse only and with refuse or escalate / review; stage-2 AUC as a threshold-free diagnostic; the per-language split wherever a TEST split has at least two languages with 10 or more prompts (the stop-word heuristic `guess_language`).
+
+**Decision rule, fixed now.** The pooled v2 becomes the default stage 2 **iff both hold**, using the full gate with refuse only:
+
+- the unweighted mean over the four held-out datasets of Youden's J (detection rate minus FPR) of pooled v2 is **strictly greater** than that of shipped legacy; and
+- on **no** held-out dataset does pooled v2's FPR exceed shipped legacy's FPR by more than 5 percentage points.
+
+Otherwise pooled v2 stays opt-in and legacy remains the default. A bootstrap 95% interval of the mean J gain (2,000 resamples of the TEST rows, seed 0) is printed for context only and is not part of the rule. If the rule passes: retrain the shipped file on the bundled set plus all four TRAIN splits (same caps, no held-out data), make `v2` the default, re-run `external-eval`, `redteam` and `refusal-eval`, and update every number in this README; the old model stays selectable.
+
+**Stated limits, fixed in advance.** (1) Legacy is compared zero-shot (it never saw any public data) while pooled v2 sees three public datasets per fold: that is the property being tested, not a like-for-like fit; the legacy-refit-pooled row separates data from model. (2) deepset and jailbreak TEST splits were scored in the v2 section above, but no choice was made on them and none is made now; itw and neuralchemy TEST splits are scored here for the first time. (3) The `itw` labels are the dataset authors' own (not re-checked here), and about half of neuralchemy's attacks are HackAPrompt competition prompts; neither is a production traffic sample. (4) German exists only in deepset, so held out deepset has no German in training.
+
 ### Secondary: self-authored set (in-distribution)
 
 All of the numbers in this subsection come from the runs below (macOS arm64, Python 3.12, seed 0).
