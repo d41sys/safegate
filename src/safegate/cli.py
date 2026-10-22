@@ -24,7 +24,14 @@ from safegate.external import (
 )
 from safegate.gate import SafetyGate
 from safegate.injection import DEFAULT_STAGE2, STAGE2_MODES, InjectionDetector
-from safegate.lodo import LODO_KEYS, lodo_scenarios, print_lodo, print_split_table
+from safegate.lodo import (
+    LODO_KEYS,
+    MAX_TRAIN_PER_CLASS,
+    lodo_scenarios,
+    print_lodo,
+    print_split_table,
+    shipped_split,
+)
 from safegate.mock_llm import MockStreamingLLM
 from safegate.refusal import RefusalEvaluator
 from safegate.spec import check_spec, load_spec_policy
@@ -42,7 +49,7 @@ from safegate.taxonomy import Sample
 
 
 def _detector(args: argparse.Namespace) -> InjectionDetector:
-    """The detector selected by ``--stage2`` (v2 shipped model by default)."""
+    """The detector selected by ``--stage2`` (the shipped pooled v2 model by default)."""
     return InjectionDetector(stage2=args.stage2)
 
 
@@ -297,8 +304,9 @@ def cmd_external_eval(args: argparse.Namespace) -> int:
         error_scope = "TRAIN+TEST"
     else:
         print(
-            "Shipped v2 stage 2 was fitted on the bundled set plus the TRAIN splits of deepset "
-            "and jailbreak; only the TEST split below is held out.\n"
+            "Shipped v2 stage 2 was fitted on the bundled set plus the TRAIN splits of deepset, "
+            "jailbreak, itw and neuralchemy (per-class cap, de-duplicated); only the TEST split "
+            "below is held out, so these rows are in-domain-plus, not leave-one-out numbers.\n"
         )
         _print_outcome_table(f"Shipped v2, TEST split only (n={len(test)})", zero_shot_test)
         _print_language_table(zero_shot_test)
@@ -372,32 +380,38 @@ def cmd_stage2_report(args: argparse.Namespace) -> int:
     if "protocol" in sections:
         print("## Protocol scenarios, scored once on TEST splits\n")
         print_scenarios(
-            scenarios(bundled, pools, shipped=InjectionDetector(stage2="v2"), log=sys.stderr),
+            scenarios(bundled, pools, log=sys.stderr),
             sys.stdout,
         )
     return 0
 
 
 def cmd_stage2_train(args: argparse.Namespace) -> int:
-    """Fit the shipped v2 model (bundled + deepset TRAIN + jailbreak TRAIN) and save it."""
+    """Fit the shipped pooled v2 model (bundled + all four TRAIN splits) and save it."""
     bundled = _load_bundled_samples()
-    pools = _load_pools(args.cache_dir)
-    model = fit_v2(bundled, pools["deepset"].train + pools["jailbreak"].train)
+    pools = _load_pools(args.cache_dir, LODO_KEYS)
+    split = shipped_split(pools)
+    model = fit_v2(bundled, split.train)
     meta = {
-        "trained_on": ["bundled injection_train.jsonl", "deepset TRAIN", "jailbreak TRAIN"],
+        "trained_on": ["bundled injection_train.jsonl", *[f"{k} TRAIN" for k in LODO_KEYS]],
         "datasets": {
             k: {
                 "hf_id": DATASETS[k].hf_id,
                 "revision": DATASETS[k].revision,
                 "licence": DATASETS[k].license,
             }
-            for k in DATASET_KEYS
+            for k in LODO_KEYS
         },
-        "n_rows": len(bundled) + sum(len(pools[k].train) for k in DATASET_KEYS),
+        "per_class_cap": MAX_TRAIN_PER_CLASS,
+        "n_rows": len(bundled) + len(split.train),
     }
     model.save(args.out, meta)
     t = model.thresholds
-    print(f"wrote {args.out}: review {t.review:.4f}, refuse {t.refuse:.4f}")
+    print(
+        f"wrote {args.out}: {len(bundled)} bundled + {len(split.train)} public rows "
+        f"({split.n_attacks} attacks / {split.n_benign} benign; {split.n_duplicate} duplicates "
+        f"dropped), review {t.review:.4f}, refuse {t.refuse:.4f}"
+    )
     return 0
 
 
@@ -445,7 +459,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--stage2",
         choices=STAGE2_MODES,
         default=DEFAULT_STAGE2,
-        help="stage-2 model: legacy (default) or v2 (calibrated thresholds, abstain band)",
+        help="stage-2 model: v2 (default; pooled, calibrated, abstain band) or legacy",
     )
 
     p_check = sub.add_parser(
@@ -504,7 +518,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_trn = sub.add_parser(
         "stage2-train",
-        help="Fit the shipped v2 model on bundled + public TRAIN splits and save it",
+        help="Fit the shipped pooled v2 model on bundled + all four TRAIN splits and save it",
     )
     p_trn.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
     p_trn.add_argument("--out", default="src/safegate/data/stage2_v2.npz")

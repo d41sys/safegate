@@ -67,9 +67,9 @@ def cap_per_class(rows: Sequence[ExternalSample], per_class: int) -> list[Extern
 
 @dataclass(frozen=True)
 class LodoSplit:
-    """Training rows for one held-out dataset, with what was removed on the way."""
+    """Training rows for one held-out dataset (None: the shipped model), with what was removed."""
 
-    held_out: str
+    held_out: str | None
     sources: tuple[str, ...]
     train: list[ExternalSample]
     n_contaminated: int  # rows dropped because their text is in the held-out TEST split
@@ -102,7 +102,25 @@ def lodo_split(
     chosen = tuple(k for k in pools if k != held_out) if sources is None else tuple(sources)
     if held_out in chosen:
         raise ValueError("the held-out dataset cannot be one of its own training sources")
-    forbidden = {norm_key(r.text) for r in pools[held_out].test}
+    return _pool(pools, held_out, chosen, {norm_key(r.text) for r in pools[held_out].test}, cap)
+
+
+def shipped_split(pools: dict[str, Pool], *, cap: int = MAX_TRAIN_PER_CLASS) -> LodoSplit:
+    """TRAIN rows of the shipped pooled model: every dataset's TRAIN split, capped and unique.
+
+    Nothing is held out here (TEST splits are never read), so a TEST score of the shipped model
+    on one of these datasets is in-domain-plus, not a leave-one-out number.
+    """
+    return _pool(pools, None, tuple(pools), set(), cap)
+
+
+def _pool(
+    pools: dict[str, Pool],
+    held_out: str | None,
+    chosen: tuple[str, ...],
+    forbidden: set[str],
+    cap: int,
+) -> LodoSplit:
     gathered: list[ExternalSample] = []
     n_contaminated = 0
     for key in chosen:

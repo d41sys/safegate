@@ -25,9 +25,10 @@ from safegate.stage2 import Stage2Model, fit_stage2
 from safegate.taxonomy import AttackCategory, Sample
 
 STAGE2_MODES = ("legacy", "v2")
-# The pre-declared decision rule (README, "Stage 2 v2: protocol") did not pass, so legacy stays
-# the default and v2 is opt-in: InjectionDetector(stage2="v2") or `safegate check --stage2 v2`.
-DEFAULT_STAGE2 = "legacy"
+# The leave-one-dataset-out decision rule (README, "Pooled stage 2 (leave-one-dataset-out)")
+# passed, so the pooled v2 model is the default; legacy stays selectable with stage2="legacy"
+# or `safegate check --stage2 legacy`. (The earlier two-dataset v2 had failed its own rule.)
+DEFAULT_STAGE2 = "v2"
 SHIPPED_MODEL = "data/stage2_v2.npz"  # trained by `safegate stage2-train`; see README
 
 # Zero-width characters used for evasion
@@ -233,10 +234,11 @@ def extract_features(text: str, dim: int = 4096) -> np.ndarray:
 class InjectionDetector:
     """Two-stage prompt injection detector combining heuristics and logistic regression.
 
-    ``stage2="legacy"`` (default) is the original dense hashed logistic regression with a fixed
-    ``threshold``. ``stage2="v2"`` is the sparse class-balanced model of :mod:`safegate.stage2`
-    with thresholds calibrated on validation folds and an abstain-to-escalate band; it loads the
-    shipped ``data/stage2_v2.npz`` unless a ``model`` or ``data_path`` is given.
+    ``stage2="v2"`` (default) is the sparse class-balanced model of :mod:`safegate.stage2` with
+    thresholds calibrated on pooled validation folds and an abstain-to-escalate band; it loads the
+    shipped ``data/stage2_v2.npz`` (fitted on the bundled set plus the TRAIN splits of four public
+    datasets) unless a ``model`` or ``data_path`` is given. ``stage2="legacy"`` is the original
+    dense hashed logistic regression with a fixed ``threshold``.
     """
 
     def __init__(

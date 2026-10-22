@@ -8,7 +8,8 @@ Protocol (fixed before any v2 score on a TEST split was computed):
 * Thresholds are picked on out-of-fold validation scores cut from the training rows, refuse at
   validation FPR <= 2%, review band up to FPR <= 10% (:func:`fit_v2`).
 * Scenarios (:func:`scenarios`): (a) in-domain, (b) cross-dataset, (c) bundled data only,
-  (d) the shipped v2 file. Each is scored once on a TEST split, for legacy and for v2.
+  (d) the former shipped file (bundled + deepset + jailbreak TRAIN), refit. Each is scored once
+  on a TEST split, for legacy and for v2.
 """
 
 from __future__ import annotations
@@ -149,7 +150,6 @@ def scenarios(
     bundled: Sequence[Sample],
     pools: dict[str, Pool],
     *,
-    shipped: InjectionDetector,
     log: TextIO | None = None,
 ) -> list[Scenario]:
     """The protocol's scenarios, in report order. TEST splits are scored here and nowhere else."""
@@ -165,23 +165,17 @@ def scenarios(
         ("(b2) cross-dataset", "bundled + jailbreak TRAIN", jb.train, ds),
         ("(c1) bundled only", "bundled", [], ds),
         ("(c2) bundled only", "bundled", [], jb),
-        ("(d1) shipped v2 file", "bundled + deepset + jailbreak TRAIN", ds.train + jb.train, ds),
-        ("(d2) shipped v2 file", "bundled + deepset + jailbreak TRAIN", ds.train + jb.train, jb),
+        ("(d1) two-dataset v2", "bundled + deepset + jailbreak TRAIN", ds.train + jb.train, ds),
+        ("(d2) two-dataset v2", "bundled + deepset + jailbreak TRAIN", ds.train + jb.train, jb),
     ]
     out: list[Scenario] = []
     fitted: dict[str, Stage2Model] = {}
     for name, desc, ext_train, test_pool in plan:
         if log:
             print(f"  scoring {name} train={desc} test={test_pool.key}", file=log, flush=True)
-        if name.startswith("(d"):
-            # the shipped artifact itself, not a refit
-            if shipped.model is None:
-                raise ValueError("the shipped detector has no v2 model")
-            model = shipped.model
-        else:
-            if desc not in fitted:
-                fitted[desc] = fit_v2(bundled, ext_train)
-            model = fitted[desc]
+        if desc not in fitted:
+            fitted[desc] = fit_v2(bundled, ext_train)
+        model = fitted[desc]
         v2 = v2_detector(model)
         legacy = legacy_detector(list(bundled) + as_samples(ext_train) if ext_train else None)
         rows = test_pool.test

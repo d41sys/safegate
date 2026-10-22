@@ -32,6 +32,7 @@ from safegate.lodo import (
     norm_key,
     print_lodo,
     print_split_table,
+    shipped_split,
 )
 from safegate.stage2_eval import Pool
 from safegate.taxonomy import Sample
@@ -117,6 +118,17 @@ def test_split_rejects_held_out_as_source_and_unknown_key() -> None:
         lodo_split(pools, "a", sources=["a"])
     with pytest.raises(KeyError):
         lodo_split(pools, "zzz")
+
+
+def test_shipped_split_uses_every_train_split_and_never_a_test_split() -> None:
+    pools = make_pools()
+    for key, pool in pools.items():
+        pool.test.append(ExternalSample(f"{key} test-only prompt", True, "test"))
+    sp = shipped_split(pools)
+    assert sp.held_out is None
+    assert sp.sources == ("a", "b", "c", "d")
+    assert {r.text for r in sp.train} == {r.text for p in pools.values() for r in p.train}
+    assert not any("test-only" in r.text for r in sp.train)
 
 
 def test_cap_per_class_keeps_hash_order_prefix() -> None:
