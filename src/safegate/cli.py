@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from collections.abc import Sequence
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from safegate.external import (
 )
 from safegate.gate import SafetyGate
 from safegate.injection import DEFAULT_STAGE2, STAGE2_MODES, InjectionDetector
+from safegate.lodo import LODO_KEYS, lodo_scenarios, print_lodo, print_split_table
 from safegate.mock_llm import MockStreamingLLM
 from safegate.refusal import RefusalEvaluator
 from safegate.spec import check_spec, load_spec_policy
@@ -332,12 +334,26 @@ def cmd_external_eval(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_pools(cache_dir: str) -> dict[str, Pool]:
+def _load_pools(cache_dir: str, keys: Sequence[str] = DATASET_KEYS) -> dict[str, Pool]:
     pools: dict[str, Pool] = {}
-    for key in DATASET_KEYS:
+    for key in keys:
         data = load_dataset(DATASETS[key], cache_dir=cache_dir)
         pools[key] = Pool(key, data.split("train"), data.split("test"))
     return pools
+
+
+def cmd_lodo_report(args: argparse.Namespace) -> int:
+    """Leave-one-dataset-out comparison of legacy, v2-single and the pooled v2 (downloads)."""
+    bundled = _load_bundled_samples()
+    pools = _load_pools(args.cache_dir, LODO_KEYS)
+    sections = set(args.section) if args.section else {"splits", "score"}
+    if "splits" in sections:
+        print("## LODO data and pooled training sets (no scoring)\n")
+        print_split_table(bundled, pools, sys.stdout)
+    if "score" in sections:
+        print("## LODO scores, each held-out TEST split scored once\n")
+        print_lodo(lodo_scenarios(bundled, pools, log=sys.stderr), sys.stdout)
+    return 0
 
 
 def cmd_stage2_report(args: argparse.Namespace) -> int:
@@ -493,6 +509,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_trn.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
     p_trn.add_argument("--out", default="src/safegate/data/stage2_v2.npz")
     p_trn.set_defaults(func=cmd_stage2_train)
+
+    p_lodo = sub.add_parser(
+        "lodo-report",
+        help="Leave-one-dataset-out: legacy vs v2-single vs pooled v2 on four public datasets",
+    )
+    p_lodo.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
+    p_lodo.add_argument(
+        "--section",
+        action="append",
+        choices=("splits", "score"),
+        help="repeatable; default: splits + score ('splits' prints sizes only and scores nothing)",
+    )
+    p_lodo.set_defaults(func=cmd_lodo_report)
 
     p_spec = sub.add_parser(
         "spec-check",
