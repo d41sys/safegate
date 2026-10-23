@@ -1021,6 +1021,24 @@ Verdict (rule fixed before scoring): **cheap but does not restore detection**.
 
 **Round 2 (declared here, after round 1, before any TEST score).** The feasible-and-helpful region, if there is one, lies between threshold 0.55 and 0.75, and the cost falls with window size (+5.4 at 600 against +16.7 at 150). One more TRAIN-only grid, same sample, same feasibility and selection rules, same TEST adoption rule: size in {450, 600, 900} characters, stride size/2, threshold in {0.60, 0.65, 0.70} (9 cells); `uv run safegate adaptive-eval --dev-windows --split train --window-sizes 450,600,900 --window-divisors 2 --window-thresholds 0.6,0.65,0.7`. There is no round 3: whatever the rule selects here is scored on TEST, helpful or not.
 
+#### Windowed scanning and Unicode confusables: TRAIN development, round 2 (7.3 minutes, output in `runs/adaptive_dev_windows_round2.md`)
+
+| Size | Stride | Threshold | ASR at K | Worst benign FPR rise | Feasible |
+| ---: | ---: | ---: | --- | ---: | --- |
+| 450 | 225 | 0.60 | 52.2% (429/822) [48.8%, 55.6%] | +1.7 points | yes |
+| 450 | 225 | 0.65 | 56.8% (467/822) [53.4%, 60.2%] | +0.3 points | yes |
+| 450 | 225 | 0.70 | 57.5% (473/822) [54.1%, 60.9%] | +0.1 points | yes |
+| 600 | 300 | 0.60 | 53.6% (441/822) [50.2%, 57.0%] | +0.9 points | yes |
+| 600 | 300 | 0.65 | 57.3% (471/822) [53.9%, 60.6%] | +0.3 points | yes |
+| 600 | 300 | 0.70 | 57.5% (473/822) [54.1%, 60.9%] | +0.1 points | yes |
+| 900 | 450 | 0.60 | 56.0% (460/822) [52.5%, 59.3%] | +0.4 points | yes |
+| 900 | 450 | 0.65 | 57.4% (472/822) [54.0%, 60.8%] | +0.1 points | yes |
+| 900 | 450 | 0.70 | 57.5% (473/822) [54.1%, 60.9%] | +0.0 points | yes |
+
+All nine cells are feasible; none comes close to the 25-point TEST bar. The rule selects **size 450, stride 225, threshold 0.60**: pooled TRAIN ASR 57.5% to 52.2% (5.3 points) for +1.7 points of benign FPR. The trade-off is monotone: every step that lets windows block more (lower threshold, smaller window) buys ASR and costs benign FPR at about the same rate, and the knee sits below the 3-point bar only where the gain is a few points. On TRAIN the windows are a poor repair for padding with this stage 2. Reasons, from the two grids [INFERENCE, not tested separately]: padded attacks the gate catches at all are the ones whose isolated score is only just above the refuse threshold (0.53), so a window threshold that keeps benign false positives low discards them; a threshold low enough to keep them also admits the many benign windows scored 0.55 to 0.6.
+
+**Amendment, made after round 2 and before any TEST score.** The two changes are separable and I had written one adoption rule for both. `unicode_confusables` has its own TRAIN rule, passed it (31.5 points, +0.1 points), and cannot move adaptive ASR by 25 points (the defended homoglyph evasion was already 0.3%), so tying it to the windows rule would make it ship or not on the strength of a different component. Therefore: `unicode_confusables` ships regardless of the TEST outcome of the windows, and the **windows adoption rule** is the one above with the reference defence being `invisible, nfkc, confusables, unicode_confusables, separators, leet, base64, rot13` *without windows*, so that it isolates the windows. The previous README defence (no `unicode_confusables`) is still re-run as the "before" column. Nothing else in the rule (25 points, 3 points, default gate decides) changes. `SHIPPED_COMPONENTS` and `SHIPPED_WINDOWS` in `defence.py` are set to the TRAIN choice now (commit of this paragraph); if the windows rule fails on TEST, `SHIPPED_WINDOWS` is set back to `None`.
+
 ## Spec gate: checking what the model emits
 
 The text gate reads what goes into the model. When an LLM turns text into a machine-readable specification for an optimiser or controller, the structured output can be checked deterministically before it is used. `safegate spec-check` applies a strict YAML policy of contract bounds to the emitted constraint JSON:

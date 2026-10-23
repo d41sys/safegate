@@ -300,7 +300,10 @@ def test_cli_default_defence_is_the_shipped_one(
     write_cache(tmp_path)
     assert main(["adaptive-eval", "--cache-dir", str(tmp_path), "--stage2", "legacy"]) == 0
     out = capsys.readouterr().out
-    assert f"Defence `{', '.join(D.SHIPPED_COMPONENTS)}`" in out
+    assert (
+        f"Defence `{A.describe(D.DefenceConfig.of(D.SHIPPED_COMPONENTS, D.SHIPPED_WINDOWS))}`"
+        in out
+    )
 
 
 def test_cli_adaptive_eval_offline(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

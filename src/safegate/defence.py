@@ -61,11 +61,14 @@ COMPONENTS = (
 )
 # The components chosen by the greedy recovery rule; ``unicode_confusables`` has its own rule.
 GREEDY_COMPONENTS = tuple(c for c in COMPONENTS if c != "unicode_confusables")
-# Chosen by ``safegate adaptive-eval --dev-defence --split train`` (README, "Defence development"):
-# every candidate passed the rule, so the shipped defence is all seven. Fixed before any TEST score.
-SHIPPED_COMPONENTS = tuple(c for c in COMPONENTS if c != "unicode_confusables")
-# Not chosen yet: set from ``--dev-windows`` (README, "Windowed scanning and Unicode confusables").
-SHIPPED_WINDOWS: WindowConfig | None = None
+# The seven greedy-selected components (``safegate adaptive-eval --dev-defence --split train``,
+# README "Defence development": every candidate passed the rule) plus ``unicode_confusables``,
+# which passed its own TRAIN rule (``--dev-windows``). Both fixed before any TEST score.
+SHIPPED_COMPONENTS = COMPONENTS
+# Chosen by ``safegate adaptive-eval --dev-windows --split train``, round 2 (README, "Windowed
+# scanning and Unicode confusables"): the feasible cell with the lowest TRAIN ASR. Fixed before any
+# TEST score; kept only if the TEST adoption rule passes.
+SHIPPED_WINDOWS: WindowConfig | None = WindowConfig(size=450, stride=225, threshold=0.6)
 ALLOWED = -1.0  # the score of a window the gate allows: below every window threshold (>= 0)
 
 

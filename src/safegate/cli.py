@@ -563,7 +563,8 @@ def _dev_components(attacks: list[Attack], benign: list[str]) -> None:
 def _dev_windows(args: argparse.Namespace) -> None:
     """The Unicode-confusables check and the window grid, TRAIN rows only."""
     gates = {"v2": make_gate_oracle("v2"), "legacy": make_gate_oracle("legacy")}
-    components = SHIPPED_COMPONENTS
+    # The seven greedy-selected components; `unicode_confusables` is what this run decides on.
+    components = tuple(c for c in SHIPPED_COMPONENTS if c != "unicode_confusables")
     attacks, benign = _load_attack_rows(args, DEV_ATTACKS_PER_DATASET, DEV_BENIGN_PER_DATASET)
     print("## Unicode confusables on TRAIN rows (no TEST row is read)\n")
     print(
