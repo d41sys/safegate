@@ -13,6 +13,18 @@ from typing import Any
 
 import numpy as np
 
+from safegate.adaptive import (
+    BUDGET,
+    DEV_ATTACKS_PER_DATASET,
+    DEV_BENIGN_PER_DATASET,
+    Attack,
+    dev_sample,
+    make_oracle,
+    run_attacks,
+    select_components,
+    verdict,
+)
+from safegate.defence import COMPONENTS, DefenceConfig
 from safegate.external import (
     DATASETS,
     ExternalSample,
@@ -33,6 +45,7 @@ from safegate.lodo import (
     shipped_split,
 )
 from safegate.mock_llm import MockStreamingLLM
+from safegate.perturb import homoglyph_unseen, rng_for
 from safegate.refusal import RefusalEvaluator
 from safegate.spec import check_spec, load_spec_policy
 from safegate.stage2_eval import (
@@ -422,6 +435,70 @@ def _load_json_object(path: str) -> dict[str, Any]:
     return data
 
 
+def _parse_defence(spec: str) -> DefenceConfig | None:
+    if spec == "none":
+        return None
+    return DefenceConfig.of([c for c in spec.split(",") if c])
+
+
+def cmd_adaptive_eval(args: argparse.Namespace) -> int:
+    """Rule-based adaptive attacker against the gate, with and without a normalisation defence."""
+    if args.dev_defence and args.split != "train":
+        print("error: --dev-defence reads TRAIN rows only; use --split train", file=sys.stderr)
+        return 2
+    attacks_by_split: list[Attack] = []
+    benign: list[str] = []
+    for key in LODO_KEYS:
+        rows = load_dataset(DATASETS[key], cache_dir=args.cache_dir).split(args.split)
+        att = [r for r in rows if r.is_attack]
+        ben = [r for r in rows if not r.is_attack]
+        if args.dev_defence:
+            att = dev_sample(att, DEV_ATTACKS_PER_DATASET)
+            ben = dev_sample(ben, DEV_BENIGN_PER_DATASET)
+        elif args.limit:
+            att, ben = att[: args.limit], ben[: args.limit]
+        attacks_by_split.extend(Attack(r.text, key) for r in att)
+        benign.extend(r.text for r in ben)
+
+    if args.dev_defence:
+        print("## Defence development on TRAIN rows (no TEST row is read)\n")
+        print(
+            f"{len(attacks_by_split)} attacks and {len(benign)} benign prompts "
+            f"({DEV_ATTACKS_PER_DATASET} / {DEV_BENIGN_PER_DATASET} per dataset, sha1 order); "
+            "both gates; single-family evasions of the attacks each gate blocks unperturbed.\n"
+        )
+        oracles = {"v2": make_oracle("v2"), "legacy": make_oracle("legacy")}
+        steps = select_components(oracles, attacks_by_split, benign)
+        print("| Component | Evasions newly blocked | Share of all evasions | "
+              "Worst benign FPR rise | Kept |")  # fmt: skip
+        print("| --- | ---: | ---: | ---: | --- |")
+        for st in steps:
+            print(
+                f"| {st.component} | {st.recovered}/{st.total_evasions} | {st.recovery:.1%} | "
+                f"{st.fpr_rise * 100:+.1f} points | {'yes' if st.kept else 'no'} |"
+            )
+        kept = [st.component for st in steps if st.kept]
+        print(f"\nSelected: `{','.join(kept)}`")
+        return 0
+
+    defence = _parse_defence(args.defence)
+    label = f"the default gate (`--stage2 {args.stage2}`)"
+    run = run_attacks(
+        label,
+        args.split,
+        make_oracle(args.stage2),
+        attacks_by_split,
+        benign,
+        defence,
+        budget=args.budget,
+        probe=lambda t: homoglyph_unseen(t, rng_for("homoglyph_unseen", t, 0)),
+    )
+    run.print(sys.stdout)
+    if run.defended_eval is not None:
+        print(f"Verdict (rule fixed before scoring): **{verdict(run)}**.")
+    return 0
+
+
 def cmd_spec_check(args: argparse.Namespace) -> int:
     """Check an emitted constraint spec against a contract-bounds policy.
 
@@ -536,6 +613,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeatable; default: splits + score ('splits' prints sizes only and scores nothing)",
     )
     p_lodo.set_defaults(func=cmd_lodo_report)
+
+    p_adv = sub.add_parser(
+        "adaptive-eval",
+        parents=[stage2_opt],
+        help="Rule-based adaptive attacker (homoglyphs, encodings, padding, ...) vs the gate",
+    )
+    p_adv.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
+    p_adv.add_argument("--split", choices=("test", "train"), default="test")
+    p_adv.add_argument("--budget", type=int, default=BUDGET, help="adaptive queries per attack")
+    p_adv.add_argument(
+        "--defence",
+        default="none",
+        help=f"normalisation defence: none, or comma list of {','.join(COMPONENTS)}",
+    )
+    p_adv.add_argument(
+        "--dev-defence",
+        action="store_true",
+        help="select defence components on a TRAIN subsample (needs --split train)",
+    )
+    p_adv.add_argument("--limit", type=int, default=0, help="first N rows per dataset and class")
+    p_adv.set_defaults(func=cmd_adaptive_eval)
 
     p_spec = sub.add_parser(
         "spec-check",
