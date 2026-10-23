@@ -58,6 +58,8 @@ flowchart LR
 | `adaptive.py` | The non-adaptive and adaptive attackers (block/allow feedback only), ASR and median-queries statistics, TRAIN-only defence selection, and the report behind `safegate adaptive-eval` |
 | `defence.py` | Cheap input normalisation (invisible-character strip, NFKC, confusable folding with the gate's, the attacker's and the Unicode table, separator collapse, leet fold, base64/rot13 decode-and-rescan) that adds extra views for the gate to judge, plus optional windowed scanning (`DefenceConfig.windows`, not shipped); `SafetyGate(defence=...)` applies it |
 | `windows.py` | Overlapping character windows (`split_windows`), max aggregation (`max_score`) and `WindowConfig`; used by the defence |
+| `fresh.py` | Fresh public data for the window protocol and the benchmark: pinned-revision loaders for SPML, Gandalf, BIPIA, WildGuard benign, Dolly and NotInject, cached in `data/raw/`, cleaned against the repository's own datasets |
+| `benchmark.py` | `safegate benchmark` (the InjecGuard paper's three public metrics next to its published guard scores) and `safegate window-eval` (windows 150:37:0 on fresh data with the fixed rule) |
 | `confusables.py` | Unicode UTS #39 confusables fold (`fold`, `load`) and the generator of the vendored table `data/confusables_ascii.txt` (848 characters, 7 KB, Unicode License v3) |
 | `data/injection_train.jsonl` | 403 self-written samples: 202 attacks (about 25 per category) and 201 benign |
 | `data/stage2_v2.npz` | pooled v2 weights and thresholds fitted on the bundled set plus the TRAIN splits of deepset, jailbreak, itw and neuralchemy (no text inside); rebuilt by `safegate stage2-train` |
@@ -78,6 +80,8 @@ uv run safegate stage2-report  # legacy diagnosis + scenarios (a)-(d) on public 
 uv run safegate stage2-train   # rebuild src/safegate/data/stage2_v2.npz from the four TRAIN splits
 uv run safegate adaptive-eval  # rule-based adaptive attacker on the public TEST splits (cached data/raw, no network)
 uv run safegate check --defence shipped "Ignore all previous instructions"   # the input defence in front of the gate (also on run, redteam, refusal-eval, external-eval; --windows SIZE:STRIDE:THRESHOLD adds windows)
+uv run safegate benchmark     # the InjecGuard paper's public sets, next to published guards (downloads pinned revisions once)
+uv run safegate window-eval   # windows 150:37:0 on fresh data, with the rule fixed in docs/protocol-window-150.md
 uv run safegate spec-check examples/spec/genuine.json --policy examples/spec/policy.yaml
 uv run pytest -q
 ```
@@ -1058,7 +1062,7 @@ uv run safegate adaptive-eval --defence $NEW --windows 150:37:0 --compare-defenc
 
 * **Unicode confusables: adopted** (it passed its own TRAIN rule and ships). Against homoglyphs from the unseen probe, evasion of the defended default gate falls from 66.9% (500/747) to **29.3%** (219/747) [26.2%, 32.7%] and of the defended legacy gate from 29.4% (199/676) to **10.8%** (73/676) [8.7%, 13.4%], at +0.0 points of benign FPR for either gate against the previous defence (default gate 17.4% (178/1023) both; legacy 39.3% (402/1023) both). Nothing else moves: ASR at K = 20 is 63.2% (472/747) → 63.2% (default) and 63.0% (426/676) → 62.9% (425/676) (legacy), as expected for a component that only touches lookalike characters.
 * **Windowed scanning: rejected.** The rule asked the shipped cell (size 450, stride 225, threshold 0.60, chosen on TRAIN) for an ASR drop of at least 25 points at K = 20 against the same defence without windows, with at most +3 points of benign FPR. On the default gate the drop is **0.7 points** (63.2% → 62.5% [59.0%, 65.9%]) at +0.0 points of FPR: **reject**. On the legacy gate (reported, does not decide) the drop is 7.5 points (62.9% → 55.3% [51.6%, 59.0%]) at +1.7 points: reject. `SHIPPED_WINDOWS` is therefore `None`: no windows ship, and `--windows SIZE:STRIDE:THRESHOLD` keeps them selectable.
-* The padding hole is not closed: with the shipped defence padding still evades 42.2% (315/747) [38.7%, 45.7%] of the blocked attacks in one query on the default gate (legacy 42.8% (289/676)) and is in 71.2% (336/472) of the winning recipes (legacy 71.1% (302/425)).
+* The padding hole is not closed: with the shipped defence padding still evades 42.2% (315/747) [38.7%, 45.7%] of the blocked attacks in one query on the default gate (legacy 42.8% (289/676)) and is in 71.2% (336/472) of the winning recipes (legacy 71.1% (302/425)). The informational cell 150/37/0 was later re-tested on fresh data under its own protocol and also rejected (section "Windows 150:37:0 on fresh data" below).
 
 ##### Default gate (`--stage2 v2`), 747 blocked attacks, 1,023 benign prompts, Wilson 95% intervals
 
@@ -1148,6 +1152,192 @@ With the v2 default gate no in-distribution false-positive rate moves. With the 
 * The informational cell is TEST-scored once, after the decision. It must not be read as a tuned result; it is one point of the trade-off curve.
 * Window geometry is public in this repository. An attacker who knows it can pad inside the attack text; the fixed rule set here does not.
 * The TRAIN-selected cell was chosen under a round-2 grid that I declared after seeing round 1 (history above); round 1 alone would have selected a cell that does nothing.
+
+#### Windows 150:37:0 on fresh data (protocol `docs/protocol-window-150.md`, committed before any fresh row was scored)
+
+The informational cell above was scored once on the TEST splits that had already been used for this decision (padding evasion 42.2% to 10.6%, +9.5 points of benign FPR for the default gate, +17.0 for the legacy gate). Those splits are contaminated for it, so the cell got its own protocol on data it had never seen. `docs/protocol-window-150.md` fixes the data, the two configurations, the five metrics and the decision rule before any fresh row was scored (commit `1bd18c4`; the code that scores it, `31ac170`; a later commit only fixes a duplicated percentage in one report row and adds the derived mean to `benchmark`).
+
+**Fresh data** (licences read from the dataset cards on 2026-10-23, revisions pinned in `fresh.py`, cached under the gitignored `data/raw/`, none of it committed; exact-text overlap with deepset, jailbreak, itw, neuralchemy and the bundled set is 0 except 5 dolly rows, which are dropped):
+
+| Key | Use | Source (revision) | Licence | Rows used |
+| --- | --- | --- | --- | --- |
+| `spml` | attacks and benign | `reshabhs/SPML_Chatbot_Prompt_Injection` (`02ce808`) | MIT | 400 attacks, 500 benign (sha1 order) |
+| `gandalf` | attacks | `Lakera/gandalf_ignore_instructions` (`04737b6`) | MIT | 400 |
+| `bipia` | attacks | the BIPIA test prompts in github.com/leolee99/InjecGuard (`0bffa31`) | MIT (BIPIA upstream MIT) | 125 |
+| `wildguard` | benign | `wildguard.json` of the same repository and commit (WildGuardTest benign part) | `odc-by` upstream card | 971 |
+| `dolly` | benign, long texts | `databricks/databricks-dolly-15k` (`bdd27f4`) | CC BY-SA 3.0 | 600 (sha1 order) |
+| `notinject` | over-defense | `leolee99/NotInject` (`847ae76`), InjecGuard paper, arXiv 2410.22770 | MIT | 339, scored on its own |
+
+**Configurations.** A = the shipped defence (eight components, no windows); B = A plus windows 150:37:0. **Rule (fixed before scoring):** ship windows as the default iff, on the default gate, padding evasion falls by at least 20 points, pooled fresh benign FPR rises by at most 5 points and NotInject over-defense accuracy falls by at most 5 points. The legacy gate is scored with the same three tests; if only the legacy gate failed, windows would ship for the default gate only.
+
+```bash
+uv run safegate window-eval                    # default gate, A and B, the five metrics and the rule (about 1 minute)
+uv run safegate window-eval --stage2 legacy
+uv run safegate adaptive-eval --fresh --defence shipped --windows 150:37:0   # full adaptive tables on the same rows
+```
+
+##### Default gate (`--stage2 v2`): 925 fresh attacks, the gate blocks 460 unperturbed; 2,071 fresh benign prompts; Wilson 95% intervals
+
+| Metric | gate alone | A: shipped defence | B: A + windows 150:37:0 |
+| --- | --- | --- | --- |
+| Detection, unperturbed, fresh attacks | 49.7% (460/925) [46.5%, 52.9%] | 49.9% (462/925) [46.7%, 53.2%] | 63.0% (583/925) [59.9%, 66.1%] |
+| Benign FPR, pooled | 5.9% (123/2071) [5.0%, 7.0%] | 6.0% (124/2071) [5.0%, 7.1%] | 15.0% (310/2071) [13.5%, 16.6%] |
+| Benign FPR, spml | 4.6% (23/500) [3.1%, 6.8%] | 4.6% (23/500) [3.1%, 6.8%] | 4.6% (23/500) [3.1%, 6.8%] |
+| Benign FPR, wildguard | 8.9% (86/971) [7.2%, 10.8%] | 9.0% (87/971) [7.3%, 10.9%] | 24.8% (241/971) [22.2%, 27.6%] |
+| Benign FPR, dolly | 2.3% (14/600) [1.4%, 3.9%] | 2.3% (14/600) [1.4%, 3.9%] | 7.7% (46/600) [5.8%, 10.1%] |
+| NotInject over-defense accuracy, pooled | 94.4% (320/339) [91.4%, 96.4%] | 94.4% (320/339) [91.4%, 96.4%] | 94.4% (320/339) [91.4%, 96.4%] |
+| NotInject one-word | 99.1% (112/113) [95.2%, 99.8%] | 99.1% (112/113) [95.2%, 99.8%] | 99.1% (112/113) [95.2%, 99.8%] |
+| NotInject two-word | 92.9% (105/113) [86.6%, 96.4%] | 92.9% (105/113) [86.6%, 96.4%] | 92.9% (105/113) [86.6%, 96.4%] |
+| NotInject three-word | 91.2% (103/113) [84.5%, 95.1%] | 91.2% (103/113) [84.5%, 95.1%] | 91.2% (103/113) [84.5%, 95.1%] |
+| Adaptive ASR at K = 1 | 50.4% (232/460) [45.9%, 55.0%] | 18.3% (84/460) [15.0%, 22.0%] | 13.5% (62/460) [10.7%, 16.9%] |
+| Adaptive ASR at K = 5 | 94.3% (434/460) [91.8%, 96.1%] | 64.1% (295/460) [59.6%, 68.4%] | 46.7% (215/460) [42.2%, 51.3%] |
+| Adaptive ASR at K = 20 | 100.0% (460/460) [99.2%, 100.0%] | 95.7% (440/460) [93.4%, 97.2%] | 82.2% (378/460) [78.4%, 85.4%] |
+| Padding evasion, one query | 60.9% (280/460) [56.3%, 65.2%] | 60.9% (280/460) [56.3%, 65.2%] | 27.8% (128/460) [23.9%, 32.1%] |
+
+Rule: padding evasion falls by **33.0 points** (needs 20): pass. Pooled benign FPR rises by **9.0 points** (allows 5): **fail**. NotInject accuracy falls by 0.0 points (allows 5): pass. **Verdict: do not ship.**
+
+##### Legacy gate (`--stage2 legacy`): the gate blocks 677 of the 925 fresh attacks unperturbed
+
+| Metric | gate alone | A: shipped defence | B: A + windows 150:37:0 |
+| --- | --- | --- | --- |
+| Detection, unperturbed, fresh attacks | 73.2% (677/925) [70.2%, 75.9%] | 73.8% (683/925) [70.9%, 76.6%] | 90.2% (834/925) [88.1%, 91.9%] |
+| Benign FPR, pooled | 24.7% (512/2071) [22.9%, 26.6%] | 25.2% (521/2071) [23.3%, 27.1%] | 45.3% (938/2071) [43.2%, 47.4%] |
+| Benign FPR, spml | 25.0% (125/500) [21.4%, 29.0%] | 25.2% (126/500) [21.6%, 29.2%] | 25.2% (126/500) [21.6%, 29.2%] |
+| Benign FPR, wildguard | 26.6% (258/971) [23.9%, 29.4%] | 27.2% (264/971) [24.5%, 30.1%] | 55.6% (540/971) [52.5%, 58.7%] |
+| Benign FPR, dolly | 21.5% (129/600) [18.4%, 25.0%] | 21.8% (131/600) [18.7%, 25.3%] | 45.3% (272/600) [41.4%, 49.3%] |
+| NotInject over-defense accuracy, pooled | 62.8% (213/339) [57.6%, 67.8%] | 62.2% (211/339) [57.0%, 67.2%] | 61.4% (208/339) [56.1%, 66.4%] |
+| NotInject one-word | 69.0% (78/113) [60.0%, 76.8%] | 68.1% (77/113) [59.1%, 76.0%] | 67.3% (76/113) [58.2%, 75.2%] |
+| NotInject two-word | 66.4% (75/113) [57.3%, 74.4%] | 66.4% (75/113) [57.3%, 74.4%] | 66.4% (75/113) [57.3%, 74.4%] |
+| NotInject three-word | 53.1% (60/113) [43.9%, 62.0%] | 52.2% (59/113) [43.1%, 61.2%] | 50.4% (57/113) [41.4%, 59.5%] |
+| Adaptive ASR at K = 1 | 25.1% (170/677) [22.0%, 28.5%] | 9.0% (61/677) [7.1%, 11.4%] | 2.2% (15/677) [1.3%, 3.6%] |
+| Adaptive ASR at K = 5 | 72.1% (488/677) [68.6%, 75.3%] | 36.2% (245/677) [32.7%, 39.9%] | 9.2% (62/677) [7.2%, 11.6%] |
+| Adaptive ASR at K = 20 | 99.6% (674/677) [98.7%, 99.8%] | 78.1% (529/677) [74.9%, 81.1%] | 20.8% (141/677) [17.9%, 24.0%] |
+| Padding evasion, one query | 49.6% (336/677) [45.9%, 53.4%] | 48.0% (325/677) [44.3%, 51.8%] | 0.0% (0/677) [0.0%, 0.6%] |
+
+Rule: padding evasion falls by **48.0 points**: pass. Pooled benign FPR rises by **20.1 points**: **fail**. NotInject accuracy falls by 0.9 points: pass. **Verdict: do not ship.**
+
+**Outcome: windows stay opt-in** (`SHIPPED_WINDOWS` is `None`, `--windows 150:37:0` selects the cell on every command). Nothing the shipped defence touches changed, so no README number above was re-run.
+
+* **What the cell does.** It does cut padding: 60.9% to 27.8% of blocked attacks evade one padding rewrite on the default gate and 48.0% to 0.0% on the legacy gate; the adaptive attacker at K = 20 falls from 95.7% to 82.2% (default) and from 78.1% to 20.8% (legacy). On the default gate the padding evasion that remains, 27.8%, is still well above the 10.6% of the contaminated run, and ASR at K = 20 stays above 80%: windows alone do not close the hole.
+* **What it costs.** The false positives concentrate in long benign text. `wildguard` (482 of 971 prompts longer than 150 characters) goes from 9.0% to 24.8% on the default gate and from 27.2% to 55.6% on the legacy gate; `dolly` (35% of the full dataset's texts are longer than 150 characters) from 2.3% to 7.7% and from 21.8% to 45.3%; `spml` benign (99% of the prompts at most 150 characters, which windows cannot change) does not move. The fresh +9.0 points on the default gate matches the +9.5 of the contaminated run, so the earlier number was not an artefact of that sample.
+* **Detection also rises** (unperturbed fresh attacks, gate + defence: 49.9% to 63.0% default, 73.8% to 90.2% legacy), mostly on `spml`, whose attacks are long (median 412 characters). The rule did not count this and does not trade it against the false positives; a reader who values recall over FPR could read the result differently.
+* **The NotInject test has little power, as the protocol disclosed:** 26 of its 339 prompts are longer than 150 characters, and a text of at most 150 characters is its own single window.
+* **Limits.** The rule uses point estimates; both failures are far outside the intervals (FPR rise 9.0 against a bound of 5, 20.1 against 5). `spml` labels depend on a system prompt the gate never sees, and `gandalf` is one attack style, so the detection rows are not a general detection estimate. No other window cell was scored on this data: a cell with a lower cost would need its own TRAIN selection and a new protocol, because these rows are now spent for this decision. The first run and a re-run after fixing a duplicated percentage in the NotInject row of the report print identical numbers elsewhere (`runs/` outputs diffed).
+
+## Benchmark vs published guards
+
+**Question.** How does safegate compare with other prompt-injection guards that have published scores on public data? The only comparison made here is one the authors of another system already ran: the **InjecGuard paper** (Li and Liu, arXiv 2410.22770 v3, 30 Mar 2025; the code and its evaluation files are in github.com/leolee99/InjecGuard, now `PIGuard`) reports accuracy of nine guards on NotInject, WildGuard benign, BIPIA and PINT. Three of those four sets are public. safegate is scored with the **same files and the same metric** (the repository's `eval.py`: accuracy = share of prompts classified correctly, NotInject and BIPIA as the mean of their subset accuracies). "Flagged" is the gate's `refuse` or `escalate`, as everywhere in this README. No other guard was run: the published numbers are transcribed from **Table 1 (PDF p. 7)** for NotInject and **Table 7 (PDF p. 16)** for WildGuard and BIPIA, and I checked Table 1 against Table 7 (agreement to rounding in all rows, except LakeraGuard's Malicious column, where the paper is 1.0 point off itself; that column is not used). The protocol is in `docs/protocol-window-150.md`, Part B, committed before any score.
+
+```bash
+uv run safegate benchmark                          # default gate: three suites, gate alone / shipped defence / shipped + windows 150:37:0
+uv run safegate benchmark --stage2 legacy
+uv run safegate benchmark --suite notinject        # also bipia, wildguard
+```
+
+Tables are sorted by score within each metric. Safegate rows: the first three configurations are "gate alone" (what `safegate check` does by default), "shipped defence, no windows" (the eight normalisation components of `--defence shipped`) and the same plus windows 150:37:0 (rejected as default above). Intervals are Wilson 95%; the BIPIA score is a mean of two accuracies, so it has no single interval (text: 75 prompts, code: 50). The published rows have no interval, because the paper gives none and does not state the subset sizes (113 per NotInject subset is on the dataset card; BIPIA and WildGuard sizes come from the repository's files).
+
+**NotInject over-defense**
+
+| System | Source | Metric | Score | Comparable? |
+| --- | --- | --- | --- | --- |
+| LlamaGuard3 | InjecGuard paper (arXiv 2410.22770 v3), Table 1, p. 7 | NotInject over-defense accuracy, mean of the 3 subsets | 99.71% | yes |
+| safegate default gate (v2), gate alone | this repository, `uv run safegate benchmark --suite notinject` | NotInject over-defense accuracy, mean of the 3 subsets | 94.4% (320/339) [91.4%, 96.4%] | yes |
+| safegate default gate (v2), shipped defence, no windows | this repository, `uv run safegate benchmark --suite notinject` | NotInject over-defense accuracy, mean of the 3 subsets | 94.4% (320/339) [91.4%, 96.4%] | yes |
+| safegate default gate (v2), shipped defence + windows 150:37:0 | this repository, `uv run safegate benchmark --suite notinject` | NotInject over-defense accuracy, mean of the 3 subsets | 94.4% (320/339) [91.4%, 96.4%] | yes |
+| LakeraGuard | InjecGuard paper (arXiv 2410.22770 v3), Table 1, p. 7 | NotInject over-defense accuracy, mean of the 3 subsets | 87.61% | yes |
+| InjecGuard | InjecGuard paper (arXiv 2410.22770 v3), Table 1, p. 7 | NotInject over-defense accuracy, mean of the 3 subsets | 87.32% | yes |
+| GPT-4o | InjecGuard paper (arXiv 2410.22770 v3), Table 1, p. 7 | NotInject over-defense accuracy, mean of the 3 subsets | 86.73% | yes |
+| Llama-2-chat | InjecGuard paper (arXiv 2410.22770 v3), Table 1, p. 7 | NotInject over-defense accuracy, mean of the 3 subsets | 76.40% | yes |
+| safegate legacy gate, gate alone | this repository, `uv run safegate benchmark --suite notinject` `--stage2 legacy` | NotInject over-defense accuracy, mean of the 3 subsets | 62.8% (213/339) [57.6%, 67.8%] | yes |
+| safegate legacy gate, shipped defence, no windows | this repository, `uv run safegate benchmark --suite notinject` `--stage2 legacy` | NotInject over-defense accuracy, mean of the 3 subsets | 62.2% (211/339) [57.0%, 67.2%] | yes |
+| safegate legacy gate, shipped defence + windows 150:37:0 | this repository, `uv run safegate benchmark --suite notinject` `--stage2 legacy` | NotInject over-defense accuracy, mean of the 3 subsets | 61.4% (208/339) [56.1%, 66.4%] | yes |
+| ProtectAIv2 | InjecGuard paper (arXiv 2410.22770 v3), Table 1, p. 7 | NotInject over-defense accuracy, mean of the 3 subsets | 56.64% | yes |
+| Fmops | InjecGuard paper (arXiv 2410.22770 v3), Table 1, p. 7 | NotInject over-defense accuracy, mean of the 3 subsets | 5.60% | yes |
+| Deepset | InjecGuard paper (arXiv 2410.22770 v3), Table 1, p. 7 | NotInject over-defense accuracy, mean of the 3 subsets | 5.31% | yes |
+| PromptGuard | InjecGuard paper (arXiv 2410.22770 v3), Table 1, p. 7 | NotInject over-defense accuracy, mean of the 3 subsets | 0.88% | yes |
+
+**BIPIA injection**
+
+| System | Source | Metric | Score | Comparable? |
+| --- | --- | --- | --- | --- |
+| PromptGuard | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | BIPIA injection accuracy, mean of text and code | 100.00% | yes |
+| Fmops | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | BIPIA injection accuracy, mean of text and code | 88.67% | yes |
+| Deepset | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | BIPIA injection accuracy, mean of text and code | 84.67% | yes |
+| safegate legacy gate, shipped defence + windows 150:37:0 | this repository, `uv run safegate benchmark --suite bipia` `--stage2 legacy` | BIPIA injection accuracy, mean of text and code | 73.3% (text 44/75, code 44/50) | yes |
+| InjecGuard | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | BIPIA injection accuracy, mean of text and code | 68.34% | yes |
+| GPT-4o | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | BIPIA injection accuracy, mean of text and code | 66.00% | yes |
+| safegate legacy gate, shipped defence, no windows | this repository, `uv run safegate benchmark --suite bipia` `--stage2 legacy` | BIPIA injection accuracy, mean of text and code | 65.3% (text 44/75, code 36/50) | yes |
+| safegate legacy gate, gate alone | this repository, `uv run safegate benchmark --suite bipia` `--stage2 legacy` | BIPIA injection accuracy, mean of text and code | 64.3% (text 44/75, code 35/50) | yes |
+| Llama-2-chat | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | BIPIA injection accuracy, mean of text and code | 40.34% | yes |
+| LlamaGuard3 | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | BIPIA injection accuracy, mean of text and code | 39.67% | yes |
+| safegate default gate (v2), shipped defence + windows 150:37:0 | this repository, `uv run safegate benchmark --suite bipia` | BIPIA injection accuracy, mean of text and code | 21.3% (text 8/75, code 16/50) | yes |
+| LakeraGuard | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | BIPIA injection accuracy, mean of text and code | 12.00% | yes |
+| ProtectAIv2 | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | BIPIA injection accuracy, mean of text and code | 8.67% | yes |
+| safegate default gate (v2), gate alone | this repository, `uv run safegate benchmark --suite bipia` | BIPIA injection accuracy, mean of text and code | 8.3% (text 8/75, code 3/50) | yes |
+| safegate default gate (v2), shipped defence, no windows | this repository, `uv run safegate benchmark --suite bipia` | BIPIA injection accuracy, mean of text and code | 8.3% (text 8/75, code 3/50) | yes |
+
+**WildGuard benign**
+
+| System | Source | Metric | Score | Comparable? |
+| --- | --- | --- | --- | --- |
+| LlamaGuard3 | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | WildGuard benign accuracy | 95.16% | yes |
+| safegate default gate (v2), gate alone | this repository, `uv run safegate benchmark --suite wildguard` | WildGuard benign accuracy | 91.1% (885/971) [89.2%, 92.8%] | yes |
+| safegate default gate (v2), shipped defence, no windows | this repository, `uv run safegate benchmark --suite wildguard` | WildGuard benign accuracy | 91.0% (884/971) [89.1%, 92.7%] | yes |
+| GPT-4o | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | WildGuard benign accuracy | 84.24% | yes |
+| LakeraGuard | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | WildGuard benign accuracy | 82.60% | yes |
+| InjecGuard | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | WildGuard benign accuracy | 76.11% | yes |
+| safegate default gate (v2), shipped defence + windows 150:37:0 | this repository, `uv run safegate benchmark --suite wildguard` | WildGuard benign accuracy | 75.2% (730/971) [72.4%, 77.8%] | yes |
+| ProtectAIv2 | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | WildGuard benign accuracy | 75.18% | yes |
+| Llama-2-chat | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | WildGuard benign accuracy | 74.07% | yes |
+| safegate legacy gate, gate alone | this repository, `uv run safegate benchmark --suite wildguard` `--stage2 legacy` | WildGuard benign accuracy | 73.4% (713/971) [70.6%, 76.1%] | yes |
+| safegate legacy gate, shipped defence, no windows | this repository, `uv run safegate benchmark --suite wildguard` `--stage2 legacy` | WildGuard benign accuracy | 72.8% (707/971) [69.9%, 75.5%] | yes |
+| Deepset | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | WildGuard benign accuracy | 50.98% | yes |
+| Fmops | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | WildGuard benign accuracy | 50.88% | yes |
+| safegate legacy gate, shipped defence + windows 150:37:0 | this repository, `uv run safegate benchmark --suite wildguard` `--stage2 legacy` | WildGuard benign accuracy | 44.4% (431/971) [41.3%, 47.5%] | yes |
+| PromptGuard | InjecGuard paper (arXiv 2410.22770 v3), Table 7, p. 16 | WildGuard benign accuracy | 6.69% | yes |
+
+**Derived** (computed here; the paper does not publish it)
+
+| System | Mean of the three metrics above |
+| --- | --- |
+| GPT-4o | 79.0% |
+| LlamaGuard3 | 78.2% |
+| InjecGuard | 77.3% |
+| safegate legacy gate, gate alone | 66.9% |
+| safegate legacy gate, shipped defence, no windows | 66.8% |
+| safegate default gate (v2), gate alone | 64.6% |
+| safegate default gate (v2), shipped defence, no windows | 64.6% |
+| safegate default gate (v2), shipped defence + windows 150:37:0 | 63.6% |
+| Llama-2-chat | 63.6% |
+| LakeraGuard | 60.7% |
+| safegate legacy gate, shipped defence + windows 150:37:0 | 59.7% |
+| Fmops | 48.4% |
+| Deepset | 47.0% |
+| ProtectAIv2 | 46.8% |
+| PromptGuard | 35.9% |
+
+**PINT leaderboard**
+
+| System | Source | Metric | Score | Comparable? |
+| --- | --- | --- | --- | --- |
+| Lakera Guard | lakeraai/pint-benchmark README @0efab3f, tested 2025-05-02 | PINT score | 95.22% | no: the PINT dataset is not public, safegate cannot be scored on it |
+| AWS Bedrock Guardrails | lakeraai/pint-benchmark README @0efab3f, tested 2025-05-02 | PINT score | 89.24% | no: the PINT dataset is not public, safegate cannot be scored on it |
+| Azure AI Prompt Shield (documents + user prompts) | lakeraai/pint-benchmark README @0efab3f, tested 2025-05-02 | PINT score | 89.12% | no: the PINT dataset is not public, safegate cannot be scored on it |
+| protectai/deberta-v3-base-prompt-injection-v2 | lakeraai/pint-benchmark README @0efab3f, tested 2025-05-02 | PINT score | 79.14% | no: the PINT dataset is not public, safegate cannot be scored on it |
+| Llama Prompt Guard 2 (86M) | lakeraai/pint-benchmark README @0efab3f, tested 2025-05-05 | PINT score | 78.76% | no: the PINT dataset is not public, safegate cannot be scored on it |
+| Google Model Armor | lakeraai/pint-benchmark README @0efab3f, tested 2025-08-27 | PINT score | 70.07% | no: the PINT dataset is not public, safegate cannot be scored on it |
+| Aporia Guardrails | lakeraai/pint-benchmark README @0efab3f, tested 2025-05-02 | PINT score | 66.44% | no: the PINT dataset is not public, safegate cannot be scored on it |
+| Llama Prompt Guard (86M) | lakeraai/pint-benchmark README @0efab3f, tested 2025-05-02 | PINT score | 61.82% | no: the PINT dataset is not public, safegate cannot be scored on it |
+| safegate (any configuration) | not scored | PINT score | - | no: the dataset is private; safegate was not run on it |
+
+**Reading the comparable rows with care.**
+
+* *Same files, same metric*: yes for NotInject, WildGuard benign and BIPIA, on the assumption that the paper's Table 7 was produced with the files that the repository's README names as its test set (they were committed on 2024-10-26 and never changed). I could not check that independently.
+* *Not the same decision rule*: published guards are neural classifiers read at their default decision; safegate's rules and linear model use a refuse/escalate band, and both safegate gates had a threshold chosen on other data, not on these files (v2 was never fitted on any of them: exact-text overlap with its training data is 0 for NotInject, BIPIA and WildGuard).
+* The InjecGuard authors built NotInject and report their own model first; the other rows are numbers they measured, not ones I re-ran.
+* **PINT is not comparable.** The PINT benchmark's dataset is not public (access is by request to Lakera), so no number in the PINT columns of the paper (Table 7, Table 1's Benign, Malicious and Average) and none of the leaderboard (github.com/lakeraai/pint-benchmark README, commit `0efab3f`) can be reproduced by anyone outside, including here. Its score is a weighted accuracy on Lakera's mix of public and proprietary inputs, so even a rough translation would be invented.
+
+**Verdict.** On benign traffic safegate's default gate is as good as the best published guards: its NotInject over-defense accuracy of 94.4% [91.4%, 96.4%] is above every guard in the paper except LlamaGuard3 (99.71%), and its WildGuard benign accuracy of 91.1% [89.2%, 92.8%] is second only to LlamaGuard3 (95.16%), above GPT-4o (84.24%). On injection recall it is the weakest row in the table: BIPIA 8.3% (text 8/75, code 3/50), next to ProtectAIv2 (8.67%) and LakeraGuard (12.00%) and far below InjecGuard (68.34%) and GPT-4o (66.00%). The BIPIA prompts are task-like instructions ("Write a script to rename all files...") with no attack wording, and the default gate was fitted to datasets whose attacks mostly are worded as attacks [INFERENCE from the prompts and the per-dataset numbers, not a separate ablation]. The legacy gate sits at the other end: BIPIA 64.3% (text 44/75, code 35/50) but NotInject 62.8% [57.6%, 67.8%] and WildGuard benign 73.4%, i.e. its over-defense accuracy is nearer ProtectAIv2 (56.64%) than the top guards (86.7% to 99.7%). Neither gate balances the three public metrics the way InjecGuard, GPT-4o and LlamaGuard3 do: the unweighted mean of the three is 64.6% for the default gate and 66.9% for the legacy gate against 77.3% (InjecGuard), 78.2% (LlamaGuard3) and 79.0% (GPT-4o), which puts safegate in the middle of the table, ahead of the four open-source classifiers (35.9% to 48.4%) and of LakeraGuard (60.7%) and about level with Llama-2-chat (63.6%), but about 10 to 14 points behind the top three. Windows 150:37:0 move safegate along the trade-off, not up it: BIPIA code 6.0% to 32.0% and WildGuard benign 91.0% to 75.2% on the default gate. What the table cannot say: how safegate does on PINT, on indirect injections embedded in long documents (the BIPIA files hold only the injected instructions, not full contexts), or against a guard re-run under my conditions. The sets are small (BIPIA 125 prompts), and the comparison is with numbers from one paper whose authors chose the metric.
 
 ## Spec gate: checking what the model emits
 
