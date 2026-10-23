@@ -119,10 +119,16 @@ class Evaluation:
     first: list[int | None]
     sources: list[str]
     per_family: dict[str, list[bool]]  # family -> evaded, aligned with ``first``
+    winners: list[tuple[str, ...] | None]  # the recipe of the first evasion, aligned with ``first``
 
     def evasion(self, family: str) -> Rate:
         flags = self.per_family[family]
         return Rate(sum(flags), len(flags))
+
+    def winner_share(self, family: str) -> Rate:
+        """Among evaded attacks, the share whose winning recipe uses ``family``."""
+        won = [w for w in self.winners if w is not None]
+        return Rate(sum(family in w for w in won), len(won))
 
     def asr_by_source(self, budget: int) -> dict[str, Rate]:
         return {
@@ -135,7 +141,11 @@ def evaluate(oracle: Oracle, caught: Sequence[Attack], budget: int = BUDGET) -> 
     """Non-adaptive evasion per family, and the adaptive first-evasion index, per attack."""
     per_family = {f: [not oracle(apply(f, a.text)) for a in caught] for f in FAMILIES}
     first = [first_evasion(oracle, a.text, budget) for a in caught]
-    return Evaluation(first, [a.source for a in caught], per_family)
+    winners = [
+        None if q is None else schedule(a.text, budget)[q - 1][0]
+        for a, q in zip(caught, first, strict=True)
+    ]
+    return Evaluation(first, [a.source for a in caught], per_family, winners)
 
 
 def block_mask(oracle: Oracle, rows: Sequence[str]) -> list[bool]:
@@ -299,6 +309,15 @@ class Run:
                 f"{_fmt_median(all_d, self.budget)} over all caught attacks"
             )
         p(line + ".\n")
+        p("Families in the winning recipe (share of evaded attacks; a pair counts for both):\n")
+        p("| Family | Gate |" + (" Gate + defence |" if has_def else ""))
+        p("| --- | --- |" + (" --- |" if has_def else ""))
+        for fam in self.base.per_family:
+            row = f"| {fam} | {self.base.winner_share(fam).fmt()} |"
+            if self.defended_eval is not None:
+                row += f" {self.defended_eval.winner_share(fam).fmt()} |"
+            p(row)
+        p()
         p("ASR by dataset at the full budget:\n")
         p("| Dataset | ASR (gate) |" + (" ASR (gate + defence) |" if has_def else ""))
         p("| --- | --- |" + (" --- |" if has_def else ""))

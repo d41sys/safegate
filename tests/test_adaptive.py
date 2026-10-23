@@ -102,6 +102,10 @@ def test_evaluate_counts_per_family_and_aligns_sources() -> None:
         for t in attacks
     ]
     assert set(ev.asr_by_source(20)) == {"a", "b"}
+    for q, w in zip(ev.first, ev.winners, strict=True):
+        assert (q is None) == (w is None)
+    won = ev.winner_share("zero_width")
+    assert won.n == sum(w is not None for w in ev.winners)
 
 
 def test_make_oracle_is_memoised_and_blocks_a_plain_injection() -> None:
@@ -232,8 +236,8 @@ def test_select_components_applies_both_conditions() -> None:
 
 
 def fake_run(guarded_first: list[int | None], fpr_rise: int) -> A.Run:
-    base = A.Evaluation([1, 2, 3, 4], ["a"] * 4, {"leet": [True] * 4})
-    guard = A.Evaluation(guarded_first, ["a"] * 4, {"leet": [False] * 4})
+    base = A.Evaluation([1, 2, 3, 4], ["a"] * 4, {"leet": [True] * 4}, [("leet",)] * 4)
+    guard = A.Evaluation(guarded_first, ["a"] * 4, {"leet": [False] * 4}, [None] * 4)
     atk = [A.Attack("t", "a")] * 4
     return A.Run(
         label="g",
