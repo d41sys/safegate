@@ -39,6 +39,15 @@ from safegate.adaptive import (
     verdict,
     window_grid,
 )
+from safegate.benchmark import (
+    SUITES,
+    adaptive_rows,
+    load_for_cli,
+    print_benchmark,
+    print_window_report,
+    run_benchmark,
+    window_protocol,
+)
 from safegate.defence import COMPONENTS, SHIPPED_COMPONENTS, SHIPPED_WINDOWS, DefenceConfig
 from safegate.external import (
     DATASETS,
@@ -523,7 +532,12 @@ def _defence_from(args: argparse.Namespace) -> DefenceConfig | None:
 def _load_attack_rows(
     args: argparse.Namespace, attacks: int, benign: int
 ) -> tuple[list[Attack], list[str]]:
-    """The rows of every dataset in ``--split``; with ``--dev-*``, the sha1-ordered TRAIN head."""
+    """The rows of every dataset in ``--split``; with ``--dev-*``, the sha1-ordered TRAIN head.
+
+    With ``--fresh`` the rows are the fresh pools of ``docs/protocol-window-150.md`` instead.
+    """
+    if args.fresh:
+        return adaptive_rows(load_for_cli(args.cache_dir))
     out_attacks: list[Attack] = []
     out_benign: list[str] = []
     for key in LODO_KEYS:
@@ -625,6 +639,9 @@ def _dev_windows(args: argparse.Namespace) -> None:
 
 def cmd_adaptive_eval(args: argparse.Namespace) -> int:
     """Rule-based adaptive attacker against the gate, with and without a normalisation defence."""
+    if args.fresh and (args.dev_defence or args.dev_windows):
+        print("error: --fresh is a TEST-style run; it cannot combine with --dev-*", file=sys.stderr)
+        return 2
     if (args.dev_defence or args.dev_windows) and args.split != "train":
         print("error: --dev-* reads TRAIN rows only; use --split train", file=sys.stderr)
         return 2
@@ -643,7 +660,7 @@ def cmd_adaptive_eval(args: argparse.Namespace) -> int:
     def run(config: DefenceConfig | None) -> Run:
         return run_attacks(
             label,
-            args.split,
+            "fresh" if args.fresh else args.split,
             gate.blocks,
             attacks,
             benign,
@@ -670,6 +687,21 @@ def cmd_adaptive_eval(args: argparse.Namespace) -> int:
             f"(needs {ADOPT_MIN_ASR_DROP * 100:.0f}), benign FPR rises by {rise * 100:+.1f} "
             f"points (allows {ADOPT_MAX_FPR_RISE * 100:.0f}): **{'adopt' if ok else 'reject'}**."
         )
+    return 0
+
+
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    """Score the gate on the public sets of the InjecGuard paper, next to its published guards."""
+    suites = list(SUITES.values()) if args.suite == "all" else [SUITES[args.suite]]
+    fresh = load_for_cli(args.cache_dir, args.refresh)
+    print_benchmark(args.stage2, fresh, run_benchmark(args.stage2, fresh, suites), suites)
+    return 0
+
+
+def cmd_window_eval(args: argparse.Namespace) -> int:
+    """Windows 150:37:0 against the shipped defence on the fresh data; applies the fixed rule."""
+    fresh = load_for_cli(args.cache_dir, args.refresh)
+    print_window_report(window_protocol(args.stage2, fresh, args.budget), fresh)
     return 0
 
 
@@ -854,7 +886,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="check unicode_confusables and select the window cell on TRAIN (needs --split train)",
     )
     p_adv.add_argument("--limit", type=int, default=0, help="first N rows per dataset and class")
+    p_adv.add_argument(
+        "--fresh",
+        action="store_true",
+        help="score the fresh pools of docs/protocol-window-150.md instead of the --split rows",
+    )
     p_adv.set_defaults(func=cmd_adaptive_eval)
+
+    p_bench = sub.add_parser(
+        "benchmark",
+        parents=[stage2_opt],
+        help="Score the gate on the InjecGuard paper's public sets, next to published guards",
+    )
+    p_bench.add_argument("--suite", choices=(*SUITES, "all"), default="all")
+    p_bench.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
+    p_bench.add_argument("--refresh", action="store_true", help="re-download even if cached")
+    p_bench.set_defaults(func=cmd_benchmark)
+
+    p_win = sub.add_parser(
+        "window-eval",
+        parents=[stage2_opt],
+        help="Windows 150:37:0 against the shipped defence on fresh data, with the fixed rule",
+    )
+    p_win.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
+    p_win.add_argument("--refresh", action="store_true", help="re-download even if cached")
+    p_win.add_argument("--budget", type=int, default=BUDGET, help="adaptive queries per attack")
+    p_win.set_defaults(func=cmd_window_eval)
 
     p_spec = sub.add_parser(
         "spec-check",

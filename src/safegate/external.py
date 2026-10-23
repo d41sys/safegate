@@ -217,7 +217,7 @@ def parse_jailbreak_csv(raw: str, split: str) -> list[ExternalSample]:
     return out
 
 
-def _fetch_pages(hf_id: str, config: str, split: str, fetch: Fetcher) -> list[dict[str, Any]]:
+def fetch_pages(hf_id: str, config: str, split: str, fetch: Fetcher) -> list[dict[str, Any]]:
     """All datasets-server ``/rows`` pages of one (config, split); raises when rows are missing."""
     pages: list[dict[str, Any]] = []
     offset, total = 0, 1
@@ -246,7 +246,7 @@ def _fetch_pages(hf_id: str, config: str, split: str, fetch: Fetcher) -> list[di
 def _fetch_rows_api(spec: DatasetSpec, fetch: Fetcher) -> list[ExternalSample]:
     samples: list[ExternalSample] = []
     for split in ("train", "test"):
-        for page in _fetch_pages(spec.hf_id, "default", split, fetch):
+        for page in fetch_pages(spec.hf_id, "default", split, fetch):
             samples.extend(parse_rows_page(page, split)[0])
     return samples
 
@@ -310,7 +310,7 @@ def assemble_samples(
 def _fetch_rows_multi(spec: DatasetSpec, fetch: Fetcher) -> list[ExternalSample]:
     raw: list[ExternalSample] = []
     for source in spec.sources:
-        for page in _fetch_pages(spec.hf_id, source.config, source.split, fetch):
+        for page in fetch_pages(spec.hf_id, source.config, source.split, fetch):
             raw.extend(parse_source_page(page, source))
     return assemble_samples(raw, spec.max_benign_per_attack)
 
