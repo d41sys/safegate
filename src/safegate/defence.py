@@ -19,7 +19,11 @@ Components, in the order in which they are applied to build the normalised view:
                  letters, collapse whitespace runs
 ``leet``         undo digit/symbol letters inside tokens that also contain a letter
 ``base64``       a second view in which base64-looking blocks are replaced by their decoding
-``rot13``        a third view: the normalised text read as ROT13
+``rot13``        a third view: the text read as ROT13, only when it names the cipher
+
+Decoding happens before ``confusables``, ``separators`` and ``leet`` (the base64 and ROT13 views
+are decoded from the text after ``invisible`` and ``nfkc`` only, then normalised), so those
+components cannot corrupt a payload.
 """
 
 from __future__ import annotations
@@ -36,6 +40,9 @@ from safegate.injection import HOMOGLYPH_MAP
 from safegate.perturb import SEPARATORS, UNHOMOGLYPH, UNLEET
 
 COMPONENTS = ("invisible", "nfkc", "confusables", "separators", "leet", "base64", "rot13")
+# Chosen by ``safegate adaptive-eval --dev-defence --split train`` (README, "Defence development"):
+# every candidate passed the rule, so the shipped defence is all seven. Fixed before any TEST score.
+SHIPPED_COMPONENTS = COMPONENTS
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,7 @@ _SPACED_WORD = re.compile(r"(?<!\S)([^\w\s]*)((?:[A-Za-z] ){3,}[A-Za-z])([^\w\s]
 _SEPARATOR = re.compile(f"(?<=[A-Za-z])[{re.escape(SEPARATORS)}](?=[A-Za-z])")
 _TOKEN = re.compile(r"\S+")
 _BASE64 = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
+_ROT13_CUE = re.compile(r"rot[\s_-]?13", re.IGNORECASE)
 _PRINTABLE = 0.9  # a decoding counts as text when this share of characters prints
 
 
@@ -116,24 +124,42 @@ def decode_base64_blocks(text: str) -> str:
     return _BASE64.sub(lambda m: _decode_block(m.group(0)) or m.group(0), text)
 
 
-def views(text: str, config: DefenceConfig) -> list[str]:
-    """The extra texts the gate judges besides ``text``: distinct from it and from each other."""
-    norm = text
+def _clean(text: str, config: DefenceConfig) -> str:
+    """The steps before any decoding: invisible characters, NFKC."""
     if config.invisible:
-        norm = strip_invisible(norm)
+        text = strip_invisible(text)
     if config.nfkc:
-        norm = unicodedata.normalize("NFKC", norm)
+        text = unicodedata.normalize("NFKC", text)
+    return text
+
+
+def _fold(text: str, config: DefenceConfig) -> str:
+    """The steps after decoding: confusables, separators, leet (these would corrupt a payload)."""
     if config.confusables:
-        norm = fold_confusables(norm)
+        text = fold_confusables(text)
     if config.separators:
-        norm = collapse_separators(norm)
+        text = collapse_separators(text)
     if config.leet:
-        norm = fold_leet(norm)
+        text = fold_leet(text)
+    return text
+
+
+def views(text: str, config: DefenceConfig) -> list[str]:
+    """The extra texts the gate judges besides ``text``: distinct from it and from each other.
+
+    The normalised view is ``_fold(_clean(text))``. The base64 and ROT13 views decode
+    ``_clean(text)`` first and normalise the decoding, because the leet fold would otherwise turn
+    digits inside a base64 payload into letters. The ROT13 view is only built when the text names
+    the cipher (:data:`_ROT13_CUE`): read as ROT13, ordinary prose is gibberish that the gate
+    blocks often enough to cost +25 points of benign false positives on TRAIN (README).
+    """
+    cleaned = _clean(text, config)
+    norm = _fold(cleaned, config)
     out = [norm]
     if config.base64:
-        out.append(decode_base64_blocks(norm))
-    if config.rot13:
-        out.append(codecs.decode(norm, "rot_13"))
+        out.append(_fold(decode_base64_blocks(cleaned), config))
+    if config.rot13 and _ROT13_CUE.search(cleaned):
+        out.append(_fold(codecs.decode(cleaned, "rot_13"), config))
     return [v for i, v in enumerate(out) if v != text and v not in out[:i]]
 
 

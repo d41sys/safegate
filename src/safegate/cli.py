@@ -24,7 +24,7 @@ from safegate.adaptive import (
     select_components,
     verdict,
 )
-from safegate.defence import COMPONENTS, DefenceConfig
+from safegate.defence import COMPONENTS, SHIPPED_COMPONENTS, DefenceConfig
 from safegate.external import (
     DATASETS,
     ExternalSample,
@@ -438,6 +438,8 @@ def _load_json_object(path: str) -> dict[str, Any]:
 def _parse_defence(spec: str) -> DefenceConfig | None:
     if spec == "none":
         return None
+    if spec == "shipped":
+        return DefenceConfig.of(SHIPPED_COMPONENTS)
     return DefenceConfig.of([c for c in spec.split(",") if c])
 
 
@@ -624,8 +626,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_adv.add_argument("--budget", type=int, default=BUDGET, help="adaptive queries per attack")
     p_adv.add_argument(
         "--defence",
-        default="none",
-        help=f"normalisation defence: none, or comma list of {','.join(COMPONENTS)}",
+        default="shipped",
+        help=f"defence: shipped (default), none, or a comma list of {','.join(COMPONENTS)}",
     )
     p_adv.add_argument(
         "--dev-defence",

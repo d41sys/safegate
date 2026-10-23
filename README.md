@@ -796,6 +796,26 @@ All rates carry Wilson 95% intervals. "Detection" in this section means the full
 * Benign prompts are scored unperturbed. Whether the gate over-blocks *perturbed* benign text is not measured.
 * Disclosure: before this section was committed, the CLI was smoke-run once on TEST with `--limit 15` (first 15 rows per dataset and class) to check the harness executes. Nothing (schedule, parameters, components, thresholds, rules above) was chosen from those numbers; the base64 line of that output exposed a padding bug in the decoder, which I debugged on TRAIN rows and fixed in `defence.py` before any further run. Every number in this section after the protocol comes from the commands shown with it.
 
+### Defence development (TRAIN rows only, committed before any TEST perturbation was scored)
+
+Command: `uv run safegate adaptive-eval --dev-defence --split train` (about 2.3 minutes; 953 attacks and 1,543 benign prompts; TEST rows are not selected by this command). I ran it three times and changed the defence between runs, all on TRAIN rows, before any TEST perturbation was scored. The history, so that nothing is hidden:
+
+* **Run 1** (components as first committed). `base64` recovered 16 of 3,681 evasions (0.4%, below the 2% bar) and `rot13` recovered 833 (22.6%) but raised the TRAIN benign false-positive rate by **+25.3 points**, so both were dropped. Diagnosis: the `leet` fold ran *before* the base64 view was decoded and rewrote the digits inside the payload; the unconditional ROT13 view turns every benign prompt into gibberish that the gates block.
+* **Run 2** (decode from the text after `invisible` and `nfkc` only, then normalise; ROT13 view only when the text names the cipher). `rot13` recovered 0 of 3,681: the cue check read the text after the leet fold, which had turned `ROT13` into `ROTIE`. Bug, fixed by checking the cue before the folds.
+* **Run 3** (final, the committed defence):
+
+| Component | Evasions newly blocked | Share of all evasions | Worst benign FPR rise | Kept |
+| --- | ---: | ---: | ---: | --- |
+| invisible | 266/3681 | 7.2% | +0.0 points | yes |
+| nfkc | 164/3681 | 4.5% | +0.1 points | yes |
+| confusables | 437/3681 | 11.9% | +0.1 points | yes |
+| separators | 177/3681 | 4.8% | +0.6 points | yes |
+| leet | 496/3681 | 13.5% | +0.6 points | yes |
+| base64 | 797/3681 | 21.7% | +0.6 points | yes |
+| rot13 | 626/3681 | 17.0% | +0.6 points | yes |
+
+All seven pass the rule, so `SHIPPED_COMPONENTS` is all of them. The ROT13 view is now cue-gated, which is a weakness stated up front: an attacker who does not write "ROT13" in the wrapper instruction evades it (an always-on ROT13 view costs +25 points). The TRAIN false-positive rises are relative to the undefended gate on the same TRAIN prompts; v2 was fitted on these prompts, so its absolute TRAIN FPRs are not comparable with TEST.
+
 ## Spec gate: checking what the model emits
 
 The text gate reads what goes into the model. When an LLM turns text into a machine-readable specification for an optimiser or controller, the structured output can be checked deterministically before it is used. `safegate spec-check` applies a strict YAML policy of contract bounds to the emitted constraint JSON:
