@@ -200,6 +200,16 @@ def test_comparison_rows_have_the_five_columns_and_every_guard() -> None:
     assert len(pint) == 8 and all(r[4].startswith("no") for r in pint)
 
 
+def test_derived_mean_needs_all_suites_and_ranks_published_guards() -> None:
+    fresh = toy_fresh()
+    assert B.derived_means(B.run_benchmark("legacy", fresh, [B.SUITES["notinject"]])) == []
+    derived = B.derived_means(B.run_benchmark("legacy", fresh, list(B.SUITES.values())))
+    assert len(derived) == 3 + len(B.PUBLISHED)
+    assert [v for _, v in derived] == sorted((v for _, v in derived), reverse=True)
+    inj = dict(derived)["InjecGuard"]
+    assert inj == pytest.approx((87.32 + 76.11 + 68.34) / 3)
+
+
 def test_benchmark_configs_are_gate_alone_then_without_and_with_windows() -> None:
     configs = B.benchmark_configs()
     assert [d is None for _, d in configs] == [True, False, False]

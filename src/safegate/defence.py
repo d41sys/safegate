@@ -67,7 +67,10 @@ GREEDY_COMPONENTS = tuple(c for c in COMPONENTS if c != "unicode_confusables")
 SHIPPED_COMPONENTS = COMPONENTS
 # TRAIN round 2 selected size 450 / stride 225 / threshold 0.60 (README, "Windowed scanning and
 # Unicode confusables"), but on TEST the pre-declared adoption rule rejected it (adaptive ASR at
-# K = 20 fell by 0.7 points against the 25 required), so no windows ship. They stay selectable:
+# K = 20 fell by 0.7 points against the 25 required), so no windows ship. The cell 150:37:0 was
+# then re-tested on fresh data (docs/protocol-window-150.md) and failed its rule too: padding
+# evasion fell by 33.0 (default gate) and 48.0 points (legacy), but benign FPR rose by 9.0 and
+# 20.1 points against the 5 allowed. Windows stay selectable:
 # ``--windows SIZE:STRIDE:THRESHOLD`` on the CLI, ``DefenceConfig.windows`` in code.
 SHIPPED_WINDOWS: WindowConfig | None = None
 ALLOWED = -1.0  # the score of a window the gate allows: below every window threshold (>= 0)

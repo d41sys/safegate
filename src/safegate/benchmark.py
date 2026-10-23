@@ -284,6 +284,26 @@ def print_comparison(rows: Sequence[tuple[str, ...]], out: TextIO | None = None)
     print(file=out)
 
 
+def derived_means(rows: Sequence[BenchmarkRow]) -> list[tuple[str, float]]:
+    """Per system, the mean of the three public headline metrics (%), best first.
+
+    Only when ``rows`` cover every suite. Published guards use Table 1's over-defense column and
+    Table 7's WildGuard and BIPIA columns.
+    """
+    per_config: dict[tuple[str, str], dict[str, float]] = {}
+    for r in rows:
+        per_config.setdefault((r.stage2, r.config), {})[r.score.suite.key] = r.score.headline * 100
+    ours = [
+        (system_name(*key), sum(v.values()) / len(v))
+        for key, v in per_config.items()
+        if set(v) == set(SUITES)
+    ]
+    if not ours:
+        return []
+    theirs = [(g.name, (g.over_defense + g.wildguard + g.bipia) / 3) for g in PUBLISHED]
+    return sorted([*ours, *theirs], key=lambda x: -x[1])
+
+
 def print_benchmark(
     stage2: str, fresh: Fresh, rows: Sequence[BenchmarkRow], suites: Sequence[Suite]
 ) -> None:
@@ -306,6 +326,15 @@ def print_benchmark(
     print()
     print("### Against published guards\n")
     print_comparison(comparison_rows(rows, suites))
+    derived = derived_means(rows)
+    if derived:
+        print("### Derived: unweighted mean of the three public metrics\n")
+        print("Computed here from the numbers above; the paper does not publish it.\n")
+        print("| System | Mean of NotInject, WildGuard benign, BIPIA |")
+        print("| --- | --- |")
+        for name, value in derived:
+            print(f"| {name} | {value:.2f}% |")
+        print()
     print("### Not comparable: the PINT leaderboard\n")
     print_comparison(pint_rows())
 
@@ -446,10 +475,8 @@ def print_window_report(report: WindowReport, fresh: Fresh, out: TextIO | None =
     p("| Benign FPR, pooled | " + " | ".join(m.fpr.fmt() for m in cols) + " |")
     for key in report.alone.fpr_by_source:
         p(f"| Benign FPR, {key} | " + " | ".join(m.fpr_by_source[key].fmt() for m in cols) + " |")
-    od = " | ".join(
-        f"{_pct(m.over_defense.headline)} ({m.over_defense.pooled.fmt()})" for m in cols
-    )
-    p(f"| NotInject over-defense accuracy | {od} |")
+    od = " | ".join(m.over_defense.pooled.fmt() for m in cols)
+    p(f"| NotInject over-defense accuracy, pooled | {od} |")
     for group in report.alone.over_defense.groups:
         p(
             f"| NotInject {group.split('_')[-1]}-word | "
