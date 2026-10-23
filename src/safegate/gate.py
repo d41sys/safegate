@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from safegate.classifier import (
     ContentClassifier,
     KeywordClassifier,
 )
+from safegate.defence import DefenceConfig, scan_texts
 from safegate.injection import InjectionDetector
 from safegate.rules import (
     ACTION_PRECEDENCE,
@@ -24,6 +25,7 @@ from safegate.rules import (
 )
 
 WITHHELD_MESSAGE = "\n[response withheld by safety gate]"
+BLOCKING_ACTIONS = frozenset({"refuse", "escalate"})
 _SEVERITY: dict[str, int] = {action: rank for action, rank in ACTION_PRECEDENCE.items()}
 
 
@@ -93,6 +95,7 @@ class SafetyGate:
         classifier: ContentClassifier | None = None,
         audit_log_path: Path | str | None = None,
         buffer_size: int = 64,
+        defence: DefenceConfig | None = None,
     ) -> None:
         if rules is None:
             default_path = get_default_rules_path()
@@ -108,6 +111,7 @@ class SafetyGate:
         self.classifier = classifier or KeywordClassifier()
         self.audit_log_path = Path(audit_log_path) if audit_log_path else None
         self.buffer_size = buffer_size
+        self.defence = defence
         self.audit_records: list[dict[str, Any]] = []
 
     def _log_decision(self, target: str, text: str, decision: Decision) -> None:
@@ -129,7 +133,48 @@ class SafetyGate:
                 f.write(json.dumps(record) + "\n")
 
     def check_input(self, text: str) -> Decision:
-        """Scan input with the injection detector, content classifier and rules."""
+        """Scan input with the injection detector, content classifier and rules.
+
+        With a ``defence``, a prompt the gate allows is judged again on each normalised view and
+        each window (:func:`safegate.defence.scan_texts`); the first one blocked decides, and the
+        decision says which kind of text it was. A window blocks only when its score reaches the
+        window threshold, so the prompt is blocked exactly when the maximum over its windows does.
+        """
+        decision = self._decide(text)
+        if self.defence is not None and self.defence.enabled and not self._blocks(decision):
+            decision = self._defend(text, decision, self.defence)
+        self._log_decision("input", text, decision)
+        return decision
+
+    @staticmethod
+    def _blocks(decision: Decision) -> bool:
+        return decision.action in BLOCKING_ACTIONS
+
+    def _defend(self, text: str, decision: Decision, defence: DefenceConfig) -> Decision:
+        views, windows = scan_texts(text, defence)
+        for view in views:
+            found = self._decide(view)
+            if self._blocks(found):
+                return self._tag(found, "view")
+        if defence.windows is not None:
+            for window in windows:
+                found = self._decide(window)
+                if self._blocks(found) and found.score >= defence.windows.threshold:
+                    return self._tag(found, "window")
+        return decision
+
+    @staticmethod
+    def _tag(decision: Decision, kind: str) -> Decision:
+        """``decision`` (of a view or window) marked as such; it never carries sanitized text."""
+        return replace(
+            decision,
+            sanitized_text=None,
+            reasons=[f"Blocked on a {kind} of the input", *decision.reasons],
+            metadata={**decision.metadata, "defence": kind},
+        )
+
+    def _decide(self, text: str) -> Decision:
+        """The decision for one text, not logged."""
         detection = self.detector.detect(text)
         classification = self.classifier.classify(text)
 
@@ -167,8 +212,6 @@ class SafetyGate:
                 "classifier_flagged": classification.flagged,
             },
         )
-
-        self._log_decision("input", text, decision)
         return decision
 
     def stream_output(

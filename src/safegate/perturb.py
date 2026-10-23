@@ -25,6 +25,7 @@ import random
 import re
 from collections.abc import Callable
 
+from safegate import confusables
 from safegate.external import stable_hash
 
 Perturbation = Callable[[str, random.Random], str]
@@ -132,6 +133,15 @@ UNSEEN_CONFUSABLES: dict[str, tuple[str, ...]] = {
 }
 
 
+# The part of that probe the vendored Unicode table (:mod:`safegate.confusables`) does not list
+# either: a defence built on that table still cannot fold these. Derived, not hand-picked.
+UNLISTED_CONFUSABLES: dict[str, tuple[str, ...]] = {
+    base: kept
+    for base, alts in UNSEEN_CONFUSABLES.items()
+    if (kept := tuple(a for a in alts if a not in confusables.load()))
+}
+
+
 def homoglyph(text: str, rng: random.Random, p: float = 0.5) -> str:
     """Replace each letter that has a lookalike by one with probability ``p``."""
     return _substitute(text, rng, CONFUSABLES, p)
@@ -140,6 +150,11 @@ def homoglyph(text: str, rng: random.Random, p: float = 0.5) -> str:
 def homoglyph_unseen(text: str, rng: random.Random, p: float = 0.5) -> str:
     """Like :func:`homoglyph` but only with characters in :data:`UNSEEN_CONFUSABLES`."""
     return _substitute(text, rng, UNSEEN_CONFUSABLES, p)
+
+
+def homoglyph_unlisted(text: str, rng: random.Random, p: float = 0.5) -> str:
+    """Like :func:`homoglyph_unseen` with the characters in :data:`UNLISTED_CONFUSABLES`."""
+    return _substitute(text, rng, UNLISTED_CONFUSABLES, p)
 
 
 def _substitute(text: str, rng: random.Random, table: dict[str, tuple[str, ...]], p: float) -> str:

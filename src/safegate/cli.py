@@ -14,27 +14,39 @@ from typing import Any
 import numpy as np
 
 from safegate.adaptive import (
+    ADOPT_MAX_FPR_RISE,
+    ADOPT_MIN_ASR_DROP,
     BUDGET,
     DEV_ATTACKS_PER_DATASET,
     DEV_BENIGN_PER_DATASET,
+    WINDOW_DEV_ATTACKS_PER_DATASET,
+    WINDOW_DEV_BENIGN_PER_DATASET,
     Attack,
+    Run,
+    adoption,
+    check_unicode_confusables,
+    choose_window,
+    describe,
     dev_sample,
+    make_gate_oracle,
     make_oracle,
     run_attacks,
     select_components,
+    select_windows,
     verdict,
 )
-from safegate.defence import COMPONENTS, SHIPPED_COMPONENTS, DefenceConfig
+from safegate.defence import COMPONENTS, SHIPPED_COMPONENTS, SHIPPED_WINDOWS, DefenceConfig
 from safegate.external import (
     DATASETS,
     ExternalSample,
     LoadedDataset,
     Outcome,
+    Rate,
     load_dataset,
     score,
     shorten,
 )
-from safegate.gate import SafetyGate
+from safegate.gate import BLOCKING_ACTIONS, SafetyGate
 from safegate.injection import DEFAULT_STAGE2, STAGE2_MODES, InjectionDetector
 from safegate.lodo import (
     LODO_KEYS,
@@ -45,7 +57,7 @@ from safegate.lodo import (
     shipped_split,
 )
 from safegate.mock_llm import MockStreamingLLM
-from safegate.perturb import homoglyph_unseen, rng_for
+from safegate.perturb import homoglyph_unlisted, homoglyph_unseen, rng_for
 from safegate.refusal import RefusalEvaluator
 from safegate.spec import check_spec, load_spec_policy
 from safegate.stage2_eval import (
@@ -59,6 +71,7 @@ from safegate.stage2_eval import (
     scenarios,
 )
 from safegate.taxonomy import Sample
+from safegate.windows import WindowConfig
 
 
 def _detector(args: argparse.Namespace) -> InjectionDetector:
@@ -88,9 +101,14 @@ def _load_bundled_samples() -> list[Sample]:
     raise FileNotFoundError("Could not locate bundled injection_train.jsonl dataset")
 
 
+def _gate(args: argparse.Namespace) -> SafetyGate:
+    """The gate selected by ``--stage2`` and ``--defence`` (no defence unless asked for)."""
+    return SafetyGate(detector=_detector(args), defence=_defence_from(args))
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     """Check a single piece of text against the safety gate."""
-    gate = SafetyGate(detector=_detector(args))
+    gate = _gate(args)
     decision = gate.check_input(args.text)
 
     print(f"action:   {decision.action}")
@@ -109,7 +127,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Run one prompt through all three checkpoints against the mock streaming LLM."""
-    gate = SafetyGate(detector=_detector(args))
+    gate = _gate(args)
     output, trace = gate.run(args.prompt, MockStreamingLLM())
     print(f"output: {output.strip()}")
     print(f"final action: {trace.final_action}")
@@ -158,6 +176,26 @@ def cmd_redteam(args: argparse.Namespace) -> int:
         f"({report['benign_false_positives']}/{report['total_benign']})"
     )
 
+    defence = _defence_from(args)
+    if defence is not None:
+        print(
+            "\n### Full gate on the same held-out samples, without and with "
+            f"`{describe(defence)}`\n"
+        )
+        print("| System | Detection rate on attacks | False-positive rate on benign |")
+        print("| --- | --- | --- |")
+        for label, gate in (
+            ("full gate", SafetyGate(detector=detector)),
+            ("full gate + defence", SafetyGate(detector=detector, defence=defence)),
+        ):
+            hits = [gate.check_input(s.text).action in BLOCKING_ACTIONS for s in test_samples]
+            att = Rate(sum(h for h, s in zip(hits, test_samples, strict=True) if s.is_attack),
+                       sum(s.is_attack for s in test_samples))  # fmt: skip
+            ben = Rate(sum(h for h, s in zip(hits, test_samples, strict=True) if not s.is_attack),
+                       sum(not s.is_attack for s in test_samples))  # fmt: skip
+            print(f"| {label} | {att.fmt()} | {ben.fmt()} |")
+        print()
+
     target_det = 0.85
     target_fpr = 0.10
     det_ok = report["attack_detection_rate"] >= target_det
@@ -178,7 +216,7 @@ def cmd_redteam(args: argparse.Namespace) -> int:
 
 def cmd_refusal_eval(args: argparse.Namespace) -> int:
     """Run the refusal evaluation harness against the default safety gate."""
-    gate = SafetyGate(detector=_detector(args))
+    gate = _gate(args)
     evaluator = RefusalEvaluator()
     report = evaluator.evaluate_gate(gate)
 
@@ -199,9 +237,6 @@ def cmd_refusal_eval(args: argparse.Namespace) -> int:
     return 0
 
 
-BLOCKING_ACTIONS = frozenset({"refuse", "escalate"})
-
-
 def _as_samples(rows: list[ExternalSample], prefix: str) -> list[Sample]:
     return [Sample(f"{prefix}-{i}", r.text, None, r.is_attack) for i, r in enumerate(rows)]
 
@@ -212,8 +247,13 @@ def _detector_outcome(
     return score(name, rows, lambda t: detector.detect(t).is_injection)
 
 
-def _gate_outcome(name: str, detector: InjectionDetector, rows: list[ExternalSample]) -> Outcome:
-    gate = SafetyGate(detector=detector)
+def _gate_outcome(
+    name: str,
+    detector: InjectionDetector,
+    rows: list[ExternalSample],
+    defence: DefenceConfig | None = None,
+) -> Outcome:
+    gate = SafetyGate(detector=detector, defence=defence)
     causes: dict[str, str] = {}
 
     def blocks(text: str) -> bool:
@@ -300,15 +340,21 @@ def cmd_external_eval(args: argparse.Namespace) -> int:
     shipped = _detector(args)
     gate_label = "full gate (`check_input`, refuse/escalate = block)"
     test, everything = data.split("test"), data.samples
+    defence = _defence_from(args)
+    defended_label = f"full gate + defence `{describe(defence)}`" if defence else ""
     zero_shot_test = [
         _detector_outcome("detector alone", shipped, test),
         _gate_outcome(gate_label, shipped, test),
     ]
+    if defence is not None:
+        zero_shot_test.append(_gate_outcome(defended_label, shipped, test, defence))
     if args.stage2 == "legacy":
         zero_shot_all = [
             _detector_outcome("detector alone", shipped, everything),
             _gate_outcome(gate_label, shipped, everything),
         ]
+        if defence is not None:
+            zero_shot_all.append(_gate_outcome(defended_label, shipped, everything, defence))
         print("Legacy stage 2, bundled data only: nothing here was fitted on this data.\n")
         _print_outcome_table(f"Shipped, TEST split only (n={len(test)})", zero_shot_test)
         _print_outcome_table(f"Shipped, TRAIN+TEST (n={len(everything)})", zero_shot_all)
@@ -435,69 +481,185 @@ def _load_json_object(path: str) -> dict[str, Any]:
     return data
 
 
-def _parse_defence(spec: str) -> DefenceConfig | None:
+def _parse_windows(spec: str) -> WindowConfig | None:
+    """``none``, ``shipped`` or ``SIZE:STRIDE:THRESHOLD`` (characters, characters, score)."""
     if spec == "none":
         return None
     if spec == "shipped":
-        return DefenceConfig.of(SHIPPED_COMPONENTS)
-    return DefenceConfig.of([c for c in spec.split(",") if c])
+        return SHIPPED_WINDOWS
+    try:
+        size, stride, threshold = spec.split(":")
+        return WindowConfig(int(size), int(stride), float(threshold))
+    except ValueError as exc:
+        raise ValueError(
+            f"--windows: none, shipped or SIZE:STRIDE:THRESHOLD, got {spec!r}"
+        ) from exc
 
 
-def cmd_adaptive_eval(args: argparse.Namespace) -> int:
-    """Rule-based adaptive attacker against the gate, with and without a normalisation defence."""
-    if args.dev_defence and args.split != "train":
-        print("error: --dev-defence reads TRAIN rows only; use --split train", file=sys.stderr)
-        return 2
-    attacks_by_split: list[Attack] = []
-    benign: list[str] = []
+def _parse_defence(spec: str, windows: str | None = None) -> DefenceConfig | None:
+    """The defence for ``--defence`` and ``--windows``; windows follow ``shipped`` by default."""
+    if spec == "none":
+        components: tuple[str, ...] = ()
+    elif spec == "shipped":
+        components = SHIPPED_COMPONENTS
+    else:
+        components = tuple(c for c in spec.split(",") if c)
+    win = _parse_windows(
+        windows if windows is not None else ("shipped" if spec == "shipped" else "none")
+    )
+    if not components and win is None:
+        return None
+    return DefenceConfig.of(components, win)
+
+
+def _defence_from(args: argparse.Namespace) -> DefenceConfig | None:
+    return _parse_defence(args.defence, args.windows)
+
+
+def _load_attack_rows(
+    args: argparse.Namespace, attacks: int, benign: int
+) -> tuple[list[Attack], list[str]]:
+    """The rows of every dataset in ``--split``; with ``--dev-*``, the sha1-ordered TRAIN head."""
+    out_attacks: list[Attack] = []
+    out_benign: list[str] = []
     for key in LODO_KEYS:
         rows = load_dataset(DATASETS[key], cache_dir=args.cache_dir).split(args.split)
         att = [r for r in rows if r.is_attack]
         ben = [r for r in rows if not r.is_attack]
-        if args.dev_defence:
-            att = dev_sample(att, DEV_ATTACKS_PER_DATASET)
-            ben = dev_sample(ben, DEV_BENIGN_PER_DATASET)
+        if attacks:
+            att, ben = dev_sample(att, attacks), dev_sample(ben, benign)
         elif args.limit:
             att, ben = att[: args.limit], ben[: args.limit]
-        attacks_by_split.extend(Attack(r.text, key) for r in att)
-        benign.extend(r.text for r in ben)
+        out_attacks.extend(Attack(r.text, key) for r in att)
+        out_benign.extend(r.text for r in ben)
+    return out_attacks, out_benign
 
-    if args.dev_defence:
-        print("## Defence development on TRAIN rows (no TEST row is read)\n")
+
+def _dev_components(attacks: list[Attack], benign: list[str]) -> None:
+    print("## Defence development on TRAIN rows (no TEST row is read)\n")
+    print(
+        f"{len(attacks)} attacks and {len(benign)} benign prompts "
+        f"({DEV_ATTACKS_PER_DATASET} / {DEV_BENIGN_PER_DATASET} per dataset, sha1 order); "
+        "both gates; single-family evasions of the attacks each gate blocks unperturbed.\n"
+    )
+    oracles = {"v2": make_oracle("v2"), "legacy": make_oracle("legacy")}
+    steps = select_components(oracles, attacks, benign)
+    print("| Component | Evasions newly blocked | Share of all evasions | "
+          "Worst benign FPR rise | Kept |")  # fmt: skip
+    print("| --- | ---: | ---: | ---: | --- |")
+    for st in steps:
         print(
-            f"{len(attacks_by_split)} attacks and {len(benign)} benign prompts "
-            f"({DEV_ATTACKS_PER_DATASET} / {DEV_BENIGN_PER_DATASET} per dataset, sha1 order); "
-            "both gates; single-family evasions of the attacks each gate blocks unperturbed.\n"
+            f"| {st.component} | {st.recovered}/{st.total_evasions} | {st.recovery:.1%} | "
+            f"{st.fpr_rise * 100:+.1f} points | {'yes' if st.kept else 'no'} |"
         )
-        oracles = {"v2": make_oracle("v2"), "legacy": make_oracle("legacy")}
-        steps = select_components(oracles, attacks_by_split, benign)
-        print("| Component | Evasions newly blocked | Share of all evasions | "
-              "Worst benign FPR rise | Kept |")  # fmt: skip
-        print("| --- | ---: | ---: | ---: | --- |")
-        for st in steps:
-            print(
-                f"| {st.component} | {st.recovered}/{st.total_evasions} | {st.recovery:.1%} | "
-                f"{st.fpr_rise * 100:+.1f} points | {'yes' if st.kept else 'no'} |"
-            )
-        kept = [st.component for st in steps if st.kept]
-        print(f"\nSelected: `{','.join(kept)}`")
+    kept = [st.component for st in steps if st.kept]
+    print(f"\nSelected: `{','.join(kept)}`")
+
+
+def _dev_windows(args: argparse.Namespace) -> None:
+    """The Unicode-confusables check and the window grid, TRAIN rows only."""
+    gates = {"v2": make_gate_oracle("v2"), "legacy": make_gate_oracle("legacy")}
+    components = SHIPPED_COMPONENTS
+    attacks, benign = _load_attack_rows(args, DEV_ATTACKS_PER_DATASET, DEV_BENIGN_PER_DATASET)
+    print("## Unicode confusables on TRAIN rows (no TEST row is read)\n")
+    print(
+        f"{len(attacks)} attacks, {len(benign)} benign prompts; both gates; shipped components "
+        f"`{', '.join(components)}` with and without `unicode_confusables`.\n"
+    )
+    uni = check_unicode_confusables(
+        {n: g.blocks for n, g in gates.items()},
+        attacks,
+        benign,
+        components,
+        lambda t: homoglyph_unseen(t, rng_for("homoglyph_unseen", t, 0)),
+    )
+    print("| Probe evasions without | Probe evasions with | Attacks caught (both gates) | "
+          "Probe evasion drop | Worst benign FPR rise | Kept |")  # fmt: skip
+    print("| ---: | ---: | ---: | ---: | ---: | --- |")
+    print(
+        f"| {uni.evaded_before} | {uni.evaded_after} | {uni.caught} | "
+        f"{uni.probe_drop * 100:.1f} points | {uni.fpr_rise * 100:+.1f} points | "
+        f"{'yes' if uni.kept else 'no'} |\n"
+    )
+    if uni.kept:
+        components = (*components, "unicode_confusables")
+
+    attacks, benign = _load_attack_rows(
+        args, WINDOW_DEV_ATTACKS_PER_DATASET, WINDOW_DEV_BENIGN_PER_DATASET
+    )
+    print("## Window grid on TRAIN rows (no TEST row is read)\n")
+    print(
+        f"{len(attacks)} attacks and {len(benign)} benign prompts "
+        f"({WINDOW_DEV_ATTACKS_PER_DATASET} / {WINDOW_DEV_BENIGN_PER_DATASET} per dataset, sha1 "
+        f"order); both gates pooled; components `{', '.join(components)}`; ASR is the adaptive "
+        f"attacker at K = {args.budget} against the defence with windows.\n"
+    )
+    base_asr, steps = select_windows(gates, attacks, benign, components, args.budget)
+    print(f"Same defence without windows: ASR {base_asr.fmt()}.\n")
+    print("| Size | Stride | Threshold | ASR at K | Worst benign FPR rise | Feasible |")
+    print("| ---: | ---: | ---: | --- | ---: | --- |")
+    for st in steps:
+        c = st.config
+        print(
+            f"| {c.size} | {c.stride} | {c.threshold:g} | {st.asr.fmt()} | "
+            f"{st.fpr_rise * 100:+.1f} points | {'yes' if st.feasible else 'no'} |"
+        )
+    best = choose_window(steps)
+    c = best.config
+    print(
+        f"\nSelected: size {c.size}, stride {c.stride}, threshold {c.threshold:g} "
+        f"(ASR {best.asr.fmt()}, FPR rise {best.fpr_rise * 100:+.1f} points, "
+        f"{'feasible' if best.feasible else 'NO CELL FEASIBLE: smallest FPR rise'})."
+    )
+
+
+def cmd_adaptive_eval(args: argparse.Namespace) -> int:
+    """Rule-based adaptive attacker against the gate, with and without a normalisation defence."""
+    if (args.dev_defence or args.dev_windows) and args.split != "train":
+        print("error: --dev-* reads TRAIN rows only; use --split train", file=sys.stderr)
+        return 2
+    if args.dev_windows:
+        _dev_windows(args)
+        return 0
+    if args.dev_defence:
+        _dev_components(*_load_attack_rows(args, DEV_ATTACKS_PER_DATASET, DEV_BENIGN_PER_DATASET))
         return 0
 
-    defence = _parse_defence(args.defence)
+    attacks, benign = _load_attack_rows(args, 0, 0)
+    defence = _defence_from(args)
     label = f"the default gate (`--stage2 {args.stage2}`)"
-    run = run_attacks(
-        label,
-        args.split,
-        make_oracle(args.stage2),
-        attacks_by_split,
-        benign,
-        defence,
-        budget=args.budget,
-        probe=lambda t: homoglyph_unseen(t, rng_for("homoglyph_unseen", t, 0)),
-    )
-    run.print(sys.stdout)
-    if run.defended_eval is not None:
-        print(f"Verdict (rule fixed before scoring): **{verdict(run)}**.")
+    gate = make_gate_oracle(args.stage2)
+
+    def run(config: DefenceConfig | None) -> Run:
+        return run_attacks(
+            label,
+            args.split,
+            gate.blocks,
+            attacks,
+            benign,
+            config,
+            budget=args.budget,
+            probe=lambda t: homoglyph_unseen(t, rng_for("homoglyph_unseen", t, 0)),
+            scorer=gate.score,
+            probe_unlisted=lambda t: homoglyph_unlisted(t, rng_for("homoglyph_unlisted", t, 0)),
+        )
+
+    result = run(defence)
+    result.print(sys.stdout)
+    if result.defended_eval is not None:
+        print(f"Verdict (rule fixed before scoring): **{verdict(result)}**.")
+    if args.compare_defence is not None:
+        previous = _parse_defence(args.compare_defence, "none")
+        if previous is None:
+            print("error: --compare-defence needs a defence, not none", file=sys.stderr)
+            return 2
+        ok, drop, rise = adoption(run(previous), result)
+        print(
+            f"\nAdoption rule against `{describe(previous)}` "
+            f"(fixed before scoring): ASR at K = {args.budget} falls by {drop * 100:.1f} points "
+            f"(needs {ADOPT_MIN_ASR_DROP * 100:.0f}), benign FPR rises by {rise * 100:+.1f} "
+            f"points (allows {ADOPT_MAX_FPR_RISE * 100:.0f}): **{'adopt' if ok else 'reject'}**."
+        )
     return 0
 
 
@@ -541,15 +703,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="stage-2 model: v2 (default; pooled, calibrated, abstain band) or legacy",
     )
 
+    defence_opt = argparse.ArgumentParser(add_help=False)
+    defence_opt.add_argument(
+        "--defence",
+        default="none",
+        help="input defence in front of the gate: none (default), shipped, or a comma list of "
+        f"{','.join(COMPONENTS)}; `shipped` includes the shipped windows",
+    )
+    defence_opt.add_argument(
+        "--windows",
+        default=None,
+        help="windowed scanning: none, shipped or SIZE:STRIDE:THRESHOLD "
+        "(default: shipped with --defence shipped, otherwise none)",
+    )
+
     p_check = sub.add_parser(
-        "check", parents=[stage2_opt], help="Check a single text input against the safety gate"
+        "check",
+        parents=[stage2_opt, defence_opt],
+        help="Check a single text input against the safety gate",
     )
     p_check.add_argument("text", type=str, help="Text to check")
     p_check.set_defaults(func=cmd_check)
 
     p_run = sub.add_parser(
         "run",
-        parents=[stage2_opt],
+        parents=[stage2_opt, defence_opt],
         help="Run a prompt through pre-gen, during-gen and post-gen (mock LLM)",
     )
     p_run.add_argument("prompt", type=str, help="Prompt text")
@@ -558,21 +736,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_red = sub.add_parser(
         "redteam",
-        parents=[stage2_opt],
+        parents=[stage2_opt, defence_opt],
         help="Run red-team detection evaluation on held-out samples",
     )
     p_red.set_defaults(func=cmd_redteam)
 
     p_ref = sub.add_parser(
         "refusal-eval",
-        parents=[stage2_opt],
+        parents=[stage2_opt, defence_opt],
         help="Evaluate refusal rate, over-refusal rate, and refusal quality",
     )
     p_ref.set_defaults(func=cmd_refusal_eval)
 
     p_ext = sub.add_parser(
         "external-eval",
-        parents=[stage2_opt],
+        parents=[stage2_opt, defence_opt],
         help="Evaluate the shipped detector and gate on a public labelled dataset (downloads)",
     )
     p_ext.add_argument("--dataset", choices=sorted(DATASETS), required=True)
@@ -630,9 +808,25 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"defence: shipped (default), none, or a comma list of {','.join(COMPONENTS)}",
     )
     p_adv.add_argument(
+        "--windows",
+        default=None,
+        help="windowed scanning: none, shipped or SIZE:STRIDE:THRESHOLD "
+        "(default: shipped with --defence shipped, otherwise none)",
+    )
+    p_adv.add_argument(
+        "--compare-defence",
+        default=None,
+        help="also run this defence (components, no windows) and apply the adoption rule to it",
+    )
+    p_adv.add_argument(
         "--dev-defence",
         action="store_true",
         help="select defence components on a TRAIN subsample (needs --split train)",
+    )
+    p_adv.add_argument(
+        "--dev-windows",
+        action="store_true",
+        help="check unicode_confusables and select the window cell on TRAIN (needs --split train)",
     )
     p_adv.add_argument("--limit", type=int, default=0, help="first N rows per dataset and class")
     p_adv.set_defaults(func=cmd_adaptive_eval)

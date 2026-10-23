@@ -15,11 +15,19 @@ Components, in the order in which they are applied to build the normalised view:
 ``confusables``  fold cross-script lookalikes to ASCII with the table of :mod:`safegate.perturb`
                  plus the gate's own ``HOMOGLYPH_MAP``. This table is the attacker's table: a
                  character outside it survives, see the unseen-character probe
+``unicode_confusables``
+                 fold every lookalike of the vendored Unicode ``confusables.txt`` table
+                 (:mod:`safegate.confusables`, about 850 characters whose prototype is ASCII)
+                 and drop combining marks after ASCII letters; the two tables above win ties
 ``separators``   join letter-spaced words (``i g n o r e``), delete ``. - _ * ~ |`` between two
                  letters, collapse whitespace runs
 ``leet``         undo digit/symbol letters inside tokens that also contain a letter
 ``base64``       a second view in which base64-looking blocks are replaced by their decoding
 ``rot13``        a third view: the text read as ROT13, only when it names the cipher
+
+``windows`` (not a view; ``DefenceConfig.windows``) makes the gate also judge overlapping windows
+of the input and of every view, so a short attack inside a long benign prefix is not diluted; the
+score of a prompt is the maximum over its windows (:mod:`safegate.windows`).
 
 Decoding happens before ``confusables``, ``separators`` and ``leet`` (the base64 and ROT13 views
 are decoded from the text after ``invisible`` and ``nfkc`` only, then normalised), so those
@@ -33,36 +41,58 @@ import binascii
 import codecs
 import re
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, fields
 
+from safegate import confusables
 from safegate.injection import HOMOGLYPH_MAP
 from safegate.perturb import SEPARATORS, UNHOMOGLYPH, UNLEET
+from safegate.windows import WindowConfig, max_score, split_windows
 
-COMPONENTS = ("invisible", "nfkc", "confusables", "separators", "leet", "base64", "rot13")
+COMPONENTS = (
+    "invisible",
+    "nfkc",
+    "confusables",
+    "unicode_confusables",
+    "separators",
+    "leet",
+    "base64",
+    "rot13",
+)
+# The components chosen by the greedy recovery rule; ``unicode_confusables`` has its own rule.
+GREEDY_COMPONENTS = tuple(c for c in COMPONENTS if c != "unicode_confusables")
 # Chosen by ``safegate adaptive-eval --dev-defence --split train`` (README, "Defence development"):
 # every candidate passed the rule, so the shipped defence is all seven. Fixed before any TEST score.
-SHIPPED_COMPONENTS = COMPONENTS
+SHIPPED_COMPONENTS = tuple(c for c in COMPONENTS if c != "unicode_confusables")
+# Not chosen yet: set from ``--dev-windows`` (README, "Windowed scanning and Unicode confusables").
+SHIPPED_WINDOWS: WindowConfig | None = None
+ALLOWED = -1.0  # the score of a window the gate allows: below every window threshold (>= 0)
 
 
 @dataclass(frozen=True)
 class DefenceConfig:
-    """Which components are on. All off means no view (the gate alone)."""
+    """Which components are on. All off means no view (the gate alone).
+
+    ``windows`` is not a normalisation step: it makes the gate also judge overlapping windows of
+    the input and of every view (see :mod:`safegate.windows`).
+    """
 
     invisible: bool = False
     nfkc: bool = False
     confusables: bool = False
+    unicode_confusables: bool = False
     separators: bool = False
     leet: bool = False
     base64: bool = False
     rot13: bool = False
+    windows: WindowConfig | None = None
 
     @classmethod
-    def of(cls, components: tuple[str, ...] | list[str]) -> DefenceConfig:
+    def of(cls, components: Sequence[str], windows: WindowConfig | None = None) -> DefenceConfig:
         unknown = set(components) - set(COMPONENTS)
         if unknown:
             raise ValueError(f"unknown defence components {sorted(unknown)}")
-        return cls(**{name: name in components for name in COMPONENTS})
+        return cls(windows=windows, **{name: name in components for name in COMPONENTS})
 
     @property
     def enabled(self) -> tuple[str, ...]:
@@ -88,6 +118,11 @@ def strip_invisible(text: str) -> str:
 
 def fold_confusables(text: str) -> str:
     return "".join(_FOLD.get(c, c) for c in text)
+
+
+def fold_unicode_confusables(text: str) -> str:
+    """Fold every lookalike in the vendored Unicode table (the gate's own table wins ties)."""
+    return confusables.fold(text, extra=_FOLD)
 
 
 def collapse_separators(text: str) -> str:
@@ -137,6 +172,8 @@ def _fold(text: str, config: DefenceConfig) -> str:
     """The steps after decoding: confusables, separators, leet (these would corrupt a payload)."""
     if config.confusables:
         text = fold_confusables(text)
+    if config.unicode_confusables:
+        text = fold_unicode_confusables(text)
     if config.separators:
         text = collapse_separators(text)
     if config.leet:
@@ -163,12 +200,50 @@ def views(text: str, config: DefenceConfig) -> list[str]:
     return [v for i, v in enumerate(out) if v != text and v not in out[:i]]
 
 
-def defended(blocks: Callable[[str], bool], config: DefenceConfig) -> Callable[[str], bool]:
-    """``blocks`` or any view of the input blocked; no view is built when nothing is enabled."""
+def scan_texts(text: str, config: DefenceConfig) -> tuple[list[str], list[str]]:
+    """(views, windows): everything the gate judges besides ``text`` itself.
+
+    The windows are those of ``text`` and of each view, in that order; a window equal to ``text``,
+    to a view or to an earlier window is dropped, so a short prompt adds nothing.
+    """
+    extra = views(text, config)
+    if config.windows is None:
+        return extra, []
+    seen = {text, *extra}
+    windows: list[str] = []
+    for source in (text, *extra):
+        for w in split_windows(source, config.windows.size, config.windows.stride):
+            if w not in seen:
+                seen.add(w)
+                windows.append(w)
+    return extra, windows
+
+
+def defended(
+    blocks: Callable[[str], bool],
+    config: DefenceConfig,
+    scorer: Callable[[str], float] | None = None,
+) -> Callable[[str], bool]:
+    """``blocks`` of the text, a view or a window; no view is built when nothing is enabled.
+
+    A window blocks when ``scorer(window)`` reaches ``config.windows.threshold`` (the maximum over
+    windows is what counts). ``scorer`` is the gate's score for a window it blocks and
+    :data:`ALLOWED` (below every threshold) for one it allows; without it, a blocked window
+    scores 1.0, so every threshold up to 1.0 counts a block.
+    """
     if not config.enabled:
         return blocks
+    score = scorer or (lambda w: 1.0 if blocks(w) else ALLOWED)
 
     def check(text: str) -> bool:
-        return blocks(text) or any(blocks(v) for v in views(text, config))
+        if blocks(text):
+            return True
+        extra, windows = scan_texts(text, config)
+        if any(blocks(v) for v in extra):
+            return True
+        if config.windows is None or not windows:
+            return False
+        threshold = config.windows.threshold
+        return max_score(score, windows, ALLOWED, stop_at=threshold) >= threshold
 
     return check
