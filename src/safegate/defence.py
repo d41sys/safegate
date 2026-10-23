@@ -65,10 +65,11 @@ GREEDY_COMPONENTS = tuple(c for c in COMPONENTS if c != "unicode_confusables")
 # README "Defence development": every candidate passed the rule) plus ``unicode_confusables``,
 # which passed its own TRAIN rule (``--dev-windows``). Both fixed before any TEST score.
 SHIPPED_COMPONENTS = COMPONENTS
-# Chosen by ``safegate adaptive-eval --dev-windows --split train``, round 2 (README, "Windowed
-# scanning and Unicode confusables"): the feasible cell with the lowest TRAIN ASR. Fixed before any
-# TEST score; kept only if the TEST adoption rule passes.
-SHIPPED_WINDOWS: WindowConfig | None = WindowConfig(size=450, stride=225, threshold=0.6)
+# TRAIN round 2 selected size 450 / stride 225 / threshold 0.60 (README, "Windowed scanning and
+# Unicode confusables"), but on TEST the pre-declared adoption rule rejected it (adaptive ASR at
+# K = 20 fell by 0.7 points against the 25 required), so no windows ship. They stay selectable:
+# ``--windows SIZE:STRIDE:THRESHOLD`` on the CLI, ``DefenceConfig.windows`` in code.
+SHIPPED_WINDOWS: WindowConfig | None = None
 ALLOWED = -1.0  # the score of a window the gate allows: below every window threshold (>= 0)
 
 

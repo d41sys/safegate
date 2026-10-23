@@ -56,7 +56,9 @@ flowchart LR
 | `external.py` | Loaders for four public datasets (plain HTTPS, cached in `data/raw/`), Wilson CIs and scoring; used by `safegate external-eval` and `lodo-report` |
 | `perturb.py` | Nine seeded, deterministic, rule-based perturbations of an attack prompt (homoglyph, zero-width/punctuation, leetspeak, whitespace/case, base64, rot13, payload splitting, benign padding, synonym swap) with their inverses |
 | `adaptive.py` | The non-adaptive and adaptive attackers (block/allow feedback only), ASR and median-queries statistics, TRAIN-only defence selection, and the report behind `safegate adaptive-eval` |
-| `defence.py` | Cheap input normalisation (invisible-character strip, NFKC, confusable folding, separator collapse, leet fold, base64/rot13 decode-and-rescan) that adds extra views for the gate to judge |
+| `defence.py` | Cheap input normalisation (invisible-character strip, NFKC, confusable folding with the gate's, the attacker's and the Unicode table, separator collapse, leet fold, base64/rot13 decode-and-rescan) that adds extra views for the gate to judge, plus optional windowed scanning (`DefenceConfig.windows`, not shipped); `SafetyGate(defence=...)` applies it |
+| `windows.py` | Overlapping character windows (`split_windows`), max aggregation (`max_score`) and `WindowConfig`; used by the defence |
+| `confusables.py` | Unicode UTS #39 confusables fold (`fold`, `load`) and the generator of the vendored table `data/confusables_ascii.txt` (848 characters, 7 KB, Unicode License v3) |
 | `data/injection_train.jsonl` | 403 self-written samples: 202 attacks (about 25 per category) and 201 benign |
 | `data/stage2_v2.npz` | pooled v2 weights and thresholds fitted on the bundled set plus the TRAIN splits of deepset, jailbreak, itw and neuralchemy (no text inside); rebuilt by `safegate stage2-train` |
 
@@ -75,6 +77,7 @@ uv run safegate lodo-report    # leave-one-dataset-out on four public datasets, 
 uv run safegate stage2-report  # legacy diagnosis + scenarios (a)-(d) on public data, needs network
 uv run safegate stage2-train   # rebuild src/safegate/data/stage2_v2.npz from the four TRAIN splits
 uv run safegate adaptive-eval  # rule-based adaptive attacker on the public TEST splits (cached data/raw, no network)
+uv run safegate check --defence shipped "Ignore all previous instructions"   # the input defence in front of the gate (also on run, redteam, refusal-eval, external-eval; --windows SIZE:STRIDE:THRESHOLD adds windows)
 uv run safegate spec-check examples/spec/genuine.json --policy examples/spec/policy.yaml
 uv run pytest -q
 ```
@@ -843,10 +846,10 @@ What the full tables below show:
 * **The defence undoes the character-level families almost completely:** the share of evasions it restores is 99.4% / 96.0% for homoglyphs, 96.7% / 97.9% for zero-width insertion, 99.1% / 92.5% for leetspeak, 99.0% / 79.2% for base64, 91.5% / 94.2% for ROT13 (default / legacy); the defended gates are left with 0.0% to 7.7% evasion per family there.
 * **It does nothing for the other three.** Padding still evades 42.2% (42.8%), splitting 11.4% (0.3%), synonyms 3.9% (7.4%); the defence restores 0.9%, 10.5% and 9.4% of those evasions for the default gate. Padding is in 71.2% (336/472) of the winning recipes against the defended default gate and 71.1% (303/426) against legacy. That residual is what keeps the adaptive ASR at 63%.
 * **The cost is small here:** +0.0 points of benign FPR for the default gate, +0.9 points (393 → 402 of 1,023) for legacy. The defence also *raises* unperturbed detection, from 73.3% to 75.8% and from 66.3% to 68.7% (mostly neuralchemy), because the normalised view is scored by stage 2 as well.
-* **The homoglyph result is a ceiling.** The unseen-lookalike probe (Coptic, Cherokee and small-capital letters in no defence table) evades the defended default gate in 66.9% (500/747) of the blocked attacks and the defended legacy gate in 29.4% (199/676). A fold table only helps against characters it lists.
+* **The homoglyph result is a ceiling.** The unseen-lookalike probe (Coptic, Cherokee and small-capital letters in no defence table) evades the defended default gate in 66.9% (500/747) of the blocked attacks and the defended legacy gate in 29.4% (199/676). A fold table only helps against characters it lists. (The Unicode confusables fold added below cuts this probe's evasion of the defended default gate from 66.9% to 29.3%.)
 * **Short prompts are where the defence helps least.** Defended ASR at K = 20 is 88.9% (deepset) and 86.2% (neuralchemy) against 33.3% (jailbreak) and 41.1% (itw) for the default gate. The median TEST attack is 128.5 characters in deepset and 78 in neuralchemy, against 1,624 in jailbreak and 1,875 in itw (`uv run python -c "from safegate.external import DATASETS, load_dataset; import statistics as st; [print(k, st.median(len(r.text) for r in load_dataset(DATASETS[k]).split('test') if r.is_attack)) for k in DATASETS]"`) [INFERENCE: padding dilutes a short prompt far more than a long one; not tested separately].
 
-Limits that apply to these numbers: evasion of the gate is not a successful attack on a model (nothing here checks that a base64-wrapped or split prompt still works downstream); the attacker is a fixed rule set with 20 queries; the defended homoglyph rows assume the defender knows every lookalike the attacker uses; the ROT13 view only triggers when the text names the cipher; benign prompts were not perturbed, so over-blocking of perturbed benign text is unmeasured; the TEST attacks are the datasets' own, 1,019 prompts from four sources, so the per-dataset rows are small for deepset (n = 18 and 29 blocked attacks). No defence against padding, splitting or synonym swaps was designed or measured.
+Limits that apply to these numbers: evasion of the gate is not a successful attack on a model (nothing here checks that a base64-wrapped or split prompt still works downstream); the attacker is a fixed rule set with 20 queries; the defended homoglyph rows assume the defender knows every lookalike the attacker uses; the ROT13 view only triggers when the text names the cipher; benign prompts were not perturbed, so over-blocking of perturbed benign text is unmeasured; the TEST attacks are the datasets' own, 1,019 prompts from four sources, so the per-dataset rows are small for deepset (n = 18 and 29 blocked attacks). No defence against padding, splitting or synonym swaps was designed or measured in this section; the section on windowed scanning and Unicode confusables below measures one for padding (rejected) and one for unseen homoglyphs (adopted).
 
 #### Default gate (`--stage2 v2`)
 
@@ -1038,6 +1041,113 @@ Verdict (rule fixed before scoring): **cheap but does not restore detection**.
 All nine cells are feasible; none comes close to the 25-point TEST bar. The rule selects **size 450, stride 225, threshold 0.60**: pooled TRAIN ASR 57.5% to 52.2% (5.3 points) for +1.7 points of benign FPR. The trade-off is monotone: every step that lets windows block more (lower threshold, smaller window) buys ASR and costs benign FPR at about the same rate, and the knee sits below the 3-point bar only where the gain is a few points. On TRAIN the windows are a poor repair for padding with this stage 2. Reasons, from the two grids [INFERENCE, not tested separately]: padded attacks the gate catches at all are the ones whose isolated score is only just above the refuse threshold (0.53), so a window threshold that keeps benign false positives low discards them; a threshold low enough to keep them also admits the many benign windows scored 0.55 to 0.6.
 
 **Amendment, made after round 2 and before any TEST score.** The two changes are separable and I had written one adoption rule for both. `unicode_confusables` has its own TRAIN rule, passed it (31.5 points, +0.1 points), and cannot move adaptive ASR by 25 points (the defended homoglyph evasion was already 0.3%), so tying it to the windows rule would make it ship or not on the strength of a different component. Therefore: `unicode_confusables` ships regardless of the TEST outcome of the windows, and the **windows adoption rule** is the one above with the reference defence being `invisible, nfkc, confusables, unicode_confusables, separators, leet, base64, rot13` *without windows*, so that it isolates the windows. The previous README defence (no `unicode_confusables`) is still re-run as the "before" column. Nothing else in the rule (25 points, 3 points, default gate decides) changes. `SHIPPED_COMPONENTS` and `SHIPPED_WINDOWS` in `defence.py` are set to the TRAIN choice now (commit of this paragraph); if the windows rule fails on TEST, `SHIPPED_WINDOWS` is set back to `None`.
+
+#### Windowed scanning and Unicode confusables: TEST results (each configuration scored once per gate)
+
+```bash
+OLD=invisible,nfkc,confusables,separators,leet,base64,rot13
+NEW=invisible,nfkc,confusables,unicode_confusables,separators,leet,base64,rot13
+uv run safegate adaptive-eval --compare-defence $NEW                     # NEW + windows 450/225/0.60, and the adoption rule (about 5 minutes)
+uv run safegate adaptive-eval --defence $OLD --windows none               # before: reproduces the tables above exactly
+uv run safegate adaptive-eval --defence $NEW --windows none               # after: what ships
+uv run safegate adaptive-eval --defence $NEW --windows 150:37:0 --compare-defence $NEW   # informational only, see below
+# every command again with --stage2 legacy for the legacy gate
+```
+
+**Outcome, both parts decided by the rules written before scoring.**
+
+* **Unicode confusables: adopted** (it passed its own TRAIN rule and ships). Against homoglyphs from the unseen probe, evasion of the defended default gate falls from 66.9% (500/747) to **29.3%** (219/747) [26.2%, 32.7%] and of the defended legacy gate from 29.4% (199/676) to **10.8%** (73/676) [8.7%, 13.4%], at +0.0 points of benign FPR for either gate against the previous defence (default gate 17.4% (178/1023) both; legacy 39.3% (402/1023) both). Nothing else moves: ASR at K = 20 is 63.2% (472/747) → 63.2% (default) and 63.0% (426/676) → 62.9% (425/676) (legacy), as expected for a component that only touches lookalike characters.
+* **Windowed scanning: rejected.** The rule asked the shipped cell (size 450, stride 225, threshold 0.60, chosen on TRAIN) for an ASR drop of at least 25 points at K = 20 against the same defence without windows, with at most +3 points of benign FPR. On the default gate the drop is **0.7 points** (63.2% → 62.5% [59.0%, 65.9%]) at +0.0 points of FPR: **reject**. On the legacy gate (reported, does not decide) the drop is 7.5 points (62.9% → 55.3% [51.6%, 59.0%]) at +1.7 points: reject. `SHIPPED_WINDOWS` is therefore `None`: no windows ship, and `--windows SIZE:STRIDE:THRESHOLD` keeps them selectable.
+* The padding hole is not closed: with the shipped defence padding still evades 42.2% (315/747) [38.7%, 45.7%] of the blocked attacks in one query on the default gate (legacy 42.8% (289/676)) and is in 71.2% (336/472) of the winning recipes (legacy 71.1% (302/425)).
+
+##### Default gate (`--stage2 v2`), 747 blocked attacks, 1,023 benign prompts, Wilson 95% intervals
+
+| | Before (previous shipped defence) | After: shipped (`+ unicode_confusables`) | Tested, rejected: shipped + windows 450/225/0.60 | Informational, not eligible: windows 150/37/0 |
+| --- | --- | --- | --- | --- |
+| Baseline detection, unperturbed, gate alone | 73.3% (747/1019) [70.5%, 75.9%] | 73.3% (747/1019) [70.5%, 75.9%] | 73.3% (747/1019) [70.5%, 75.9%] | 73.3% (747/1019) [70.5%, 75.9%] |
+| Baseline detection, gate + defence | 75.8% (772/1019) [73.0%, 78.3%] | 75.8% (772/1019) [73.0%, 78.3%] | 75.8% (772/1019) [73.0%, 78.3%] | 79.5% (810/1019) [76.9%, 81.9%] |
+| ASR at 1 query, gate + defence | 7.5% (56/747) [5.8%, 9.6%] | 7.5% (56/747) [5.8%, 9.6%] | 7.5% (56/747) [5.8%, 9.6%] | 2.9% (22/747) [2.0%, 4.4%] |
+| ASR at 5 queries, gate + defence | 30.7% (229/747) [27.5%, 34.1%] | 30.7% (229/747) [27.5%, 34.1%] | 30.7% (229/747) [27.5%, 34.1%] | 10.3% (77/747) [8.3%, 12.7%] |
+| ASR at 20 queries, gate + defence | 63.2% (472/747) [59.7%, 66.6%] | 63.2% (472/747) [59.7%, 66.6%] | 62.5% (467/747) [59.0%, 65.9%] | 30.8% (230/747) [27.6%, 34.2%] |
+| Median queries to evade (evaded / all caught) | 6 / 11 | 6 / 11 | 6 / 11 | 10 / > 20 |
+| Padding family, evasion once, gate + defence | 42.2% (315/747) [38.7%, 45.7%] | 42.2% (315/747) [38.7%, 45.7%] | 42.2% (315/747) [38.7%, 45.7%] | 10.6% (79/747) [8.6%, 13.0%] |
+| Padding in the winning recipes (share of evaded) | 71.2% (336/472) [66.9%, 75.1%] | 71.2% (336/472) [66.9%, 75.1%] | 70.7% (330/467) [66.4%, 74.6%] | 29.1% (67/230) [23.6%, 35.3%] |
+| Unseen-homoglyph probe, evasion | 66.9% (500/747) [63.5%, 70.2%] | 29.3% (219/747) [26.2%, 32.7%] | 29.3% (219/747) [26.2%, 32.7%] | 22.2% (166/747) [19.4%, 25.3%] |
+| Unlisted-homoglyph probe, evasion | 31.5% (235/747) [28.2%, 34.9%] | 31.3% (234/747) [28.1%, 34.7%] | 31.3% (234/747) [28.1%, 34.7%] | 23.6% (176/747) [20.7%, 26.7%] |
+| Benign FPR, gate alone | 17.4% (178/1023) [15.2%, 19.8%] | 17.4% (178/1023) [15.2%, 19.8%] | 17.4% (178/1023) [15.2%, 19.8%] | 17.4% (178/1023) [15.2%, 19.8%] |
+| Benign FPR, gate + defence | 17.4% (178/1023) [15.2%, 19.8%] | 17.4% (178/1023) [15.2%, 19.8%] | 17.4% (178/1023) [15.2%, 19.8%] | 26.9% (275/1023) [24.3%, 29.7%] |
+
+##### Legacy gate (`--stage2 legacy`), 676 blocked attacks, 1,023 benign prompts
+
+| | Before (previous shipped defence) | After: shipped (`+ unicode_confusables`) | Tested, rejected: shipped + windows 450/225/0.60 | Informational, not eligible: windows 150/37/0 |
+| --- | --- | --- | --- | --- |
+| Baseline detection, unperturbed, gate alone | 66.3% (676/1019) [63.4%, 69.2%] | 66.3% (676/1019) [63.4%, 69.2%] | 66.3% (676/1019) [63.4%, 69.2%] | 66.3% (676/1019) [63.4%, 69.2%] |
+| Baseline detection, gate + defence | 68.7% (700/1019) [65.8%, 71.5%] | 68.8% (701/1019) [65.9%, 71.6%] | 71.1% (724/1019) [68.2%, 73.8%] | 81.6% (831/1019) [79.1%, 83.8%] |
+| ASR at 1 query, gate + defence | 6.7% (45/676) [5.0%, 8.8%] | 6.7% (45/676) [5.0%, 8.8%] | 6.1% (41/676) [4.5%, 8.1%] | 1.3% (9/676) [0.7%, 2.5%] |
+| ASR at 5 queries, gate + defence | 30.5% (206/676) [27.1%, 34.0%] | 30.5% (206/676) [27.1%, 34.0%] | 26.3% (178/676) [23.2%, 29.8%] | 6.8% (46/676) [5.1%, 9.0%] |
+| ASR at 20 queries, gate + defence | 63.0% (426/676) [59.3%, 66.6%] | 62.9% (425/676) [59.2%, 66.4%] | 55.3% (374/676) [51.6%, 59.0%] | 15.7% (106/676) [13.1%, 18.6%] |
+| Median queries to evade (evaded / all caught) | 6 / 11 | 6 / 11 | 6 / 16 | 6 / > 20 |
+| Padding family, evasion once, gate + defence | 42.8% (289/676) [39.1%, 46.5%] | 42.8% (289/676) [39.1%, 46.5%] | 36.1% (244/676) [32.6%, 39.8%] | 0.0% (0/676) [0.0%, 0.6%] |
+| Padding in the winning recipes (share of evaded) | 71.1% (303/426) [66.6%, 75.2%] | 71.1% (302/425) [66.6%, 75.2%] | 68.4% (256/374) [63.6%, 73.0%] | 0.0% (0/106) [0.0%, 3.5%] |
+| Unseen-homoglyph probe, evasion | 29.4% (199/676) [26.1%, 33.0%] | 10.8% (73/676) [8.7%, 13.4%] | 9.3% (63/676) [7.4%, 11.7%] | 7.0% (47/676) [5.3%, 9.1%] |
+| Unlisted-homoglyph probe, evasion | 13.5% (91/676) [11.1%, 16.2%] | 13.5% (91/676) [11.1%, 16.2%] | 12.4% (84/676) [10.1%, 15.1%] | 9.3% (63/676) [7.4%, 11.7%] |
+| Benign FPR, gate alone | 38.4% (393/1023) [35.5%, 41.4%] | 38.4% (393/1023) [35.5%, 41.4%] | 38.4% (393/1023) [35.5%, 41.4%] | 38.4% (393/1023) [35.5%, 41.4%] |
+| Benign FPR, gate + defence | 39.3% (402/1023) [36.3%, 42.3%] | 39.3% (402/1023) [36.3%, 42.3%] | 41.0% (419/1023) [38.0%, 44.0%] | 56.3% (576/1023) [53.2%, 59.3%] |
+
+The "before" column is the previous section, re-run: every number matches it. Without any defence the gates are evaded 100.0% (default) and 97.5% (legacy) of the time at K = 20, with a median of 2 and 3 queries. Dataset breakdowns, the full non-adaptive tables and the winning-recipe tables of every run are in the command output.
+
+**Why the shipped cell does so little, and why the informational cell is not a fix.** A window that contains a short attack still contains 300 or so characters of padding at size 450, and stage 2 reads it almost as diluted as the whole prompt: the padded attacks the gate catches at all are mostly ones whose isolated stage-2 score is just above the refuse threshold. A direct check on the first 200 TEST neuralchemy attacks (run after the decision, not part of the protocol, defence `nfkc` plus windows; command below): 162 are blocked, 114 of those evade one padding rewrite, and windows rescue 0 of 114 at 450/225/0.60, 70 of 114 at 150/75/0.55 and 92 of 114 at 150/75/0. Among the first 30 of the 114, 7 have no blocked window at all and the other 23 have maximum window scores between 0.52 and 0.62, i.e. at the refuse threshold of 0.527 that already separates attacks from benign text. Lowering the window threshold to catch them admits benign windows at the same scores. The last column is the TRAIN grid's best-ASR cell (150/37/0) scored on TEST **after the decision**, to show the trade-off out of sample, not as a candidate: it removes padding almost entirely (non-adaptive padding evasion 10.6% default, 0.0% legacy; ASR at K = 20 30.8% default, 15.7% legacy; the default adoption line reads "falls by 32.4 points, benign FPR rises by +9.5 points: reject") and pays +9.5 points of benign FPR on the default gate (17.4% → 26.9% (275/1023) [24.3%, 29.7%]) and +17.0 on legacy (38.4% → 56.3% (576/1023)). With this stage 2, windows trade benign false positives for padding robustness at roughly one for one; whether that is acceptable is a product decision, and it is not the one the pre-declared rule makes.
+
+```bash
+uv run python - <<'PY'
+from safegate.adaptive import make_gate_oracle
+from safegate.defence import DefenceConfig, defended
+from safegate.windows import WindowConfig, split_windows
+from safegate.perturb import apply
+from safegate.external import DATASETS, load_dataset
+g = make_gate_oracle("v2")
+rows = [r for r in load_dataset(DATASETS["neuralchemy"]).split("test") if r.is_attack][:200]
+caught = [r.text for r in rows if g.blocks(r.text)]
+ev = [p for p in (apply("padding", t) for t in caught) if not g.blocks(p)]
+print(len(caught), len(ev))
+for cfg in [(450, 225, 0.6), (150, 75, 0.0), (150, 75, 0.55)]:
+    d = defended(g.blocks, DefenceConfig.of(["nfkc"], WindowConfig(*cfg)), g.score)
+    print(cfg, sum(d(p) for p in ev), "of", len(ev))
+print(sorted(round(max(g.score(w) for w in split_windows(p, 150, 75)), 2) for p in ev[:30]))
+PY
+```
+
+**Collateral on the in-distribution evaluations** (run with `--defence shipped`, which now means the eight components and no windows; those commands do not use a defence unless asked, so the headline numbers earlier in this README are unchanged; outputs for `--windows 450:225:0.6` are identical in every row below):
+
+```bash
+uv run safegate external-eval --dataset deepset --defence shipped --no-retrain --errors 0   # also --stage2 legacy; jailbreak, itw, neuralchemy
+uv run safegate redteam --defence shipped        # also --stage2 legacy
+uv run safegate refusal-eval --defence shipped   # also --stage2 legacy
+```
+
+| Evaluation (TEST or held-out) | Gate alone: detection / FPR | Gate + shipped defence: detection / FPR |
+| --- | --- | --- |
+| deepset, v2 (n = 116) | 30.0% (18/60) / 0.0% (0/56) | 30.0% (18/60) / 0.0% (0/56) |
+| deepset, legacy | 48.3% (29/60) / 26.8% (15/56) | 51.7% (31/60) / 26.8% (15/56) |
+| jailbreak, legacy | 78.4% (109/139) / 59.3% (73/123) | 78.4% (109/139) / 61.0% (75/123) |
+| itw, legacy | 70.5% (198/281) / 51.9% (251/484) | 71.9% (202/281) / 53.3% (258/484) |
+| neuralchemy, legacy | 63.1% (340/539) / 15.0% (54/360) | 66.6% (359/539) / 15.0% (54/360) |
+| jailbreak, v2 (n = 262) | 92.8% (129/139) / 9.8% (12/123) | 92.8% (129/139) / 9.8% (12/123) |
+| itw, v2 (n = 765) | 82.2% (231/281) / 34.3% (166/484) | 82.2% (231/281) / 34.3% (166/484) |
+| neuralchemy, v2 (n = 899) | 68.5% (369/539) / 0.0% (0/360) | 73.1% (394/539) / 0.0% (0/360) |
+| `redteam`, v2 (self-authored, 81 held-out) | 100.0% (39/39) / 9.5% (4/42) | 100.0% (39/39) / 9.5% (4/42) |
+| `redteam`, legacy | 97.4% (38/39) / 0.0% (0/42) | 100.0% (39/39) / 0.0% (0/42) |
+| `refusal-eval`, v2 and legacy (10 + 10 prompts) | refusal 90.0% (9/10), over-refusal 0.0% (0/10), quality 0.75 | identical |
+
+With the v2 default gate no in-distribution false-positive rate moves. With the legacy gate the previous defence already cost 1.7 points on jailbreak (59.3% to 61.0%) and 1.4 on itw (51.9% to 53.3%); the new fold changes none of these: the previous defence (`--defence $OLD --windows none`) gives the same legacy counts on jailbreak (109/139, 75/123), itw (202/281, 258/484) and neuralchemy (359/539, 54/360), and on deepset one attack fewer (50.0% (30/60) against 51.7% (31/60) now, benign 15/56 for both). The v2 detection gains (neuralchemy 68.5% to 73.1%) are likewise the previous defence's decode and normalise views; the same holds for `redteam` legacy (97.4% to 100.0% with the previous defence too; benign 0/42 with and without, and 4/42 for v2 with and without). The new fold's only in-distribution effect is therefore that one deepset attack on the legacy gate, which has no lookalike characters of its own to fold [INFERENCE: not traced to the character]. The deepset result stays what it was: 30.0% detection by the v2 gate on the English and German TEST rows, 0.0% on German.
+
+**Limits of this result.**
+
+* The unseen-lookalike improvement is measured on a probe that was written before the Unicode table was looked at, but it is one probe of 33 characters (23 listed in the table); the *unlisted* probe (10 characters in no table, `perturb.UNLISTED_CONFUSABLES`) still evades 31.3% (234/747) of the defended default gate and 13.5% (91/676) of legacy, unchanged by the new fold. A fold table only helps against characters it lists, and the attacker chooses the characters.
+* The unseen-lookalike numbers are lower than the ones before by construction of the table, not by a better detector: the adaptive-ASR and padding rows show that nothing else in the gate changed.
+* The informational cell is TEST-scored once, after the decision. It must not be read as a tuned result; it is one point of the trade-off curve.
+* Window geometry is public in this repository. An attacker who knows it can pad inside the attack text; the fixed rule set here does not.
+* The TRAIN-selected cell was chosen under a round-2 grid that I declared after seeing round 1 (history above); round 1 alone would have selected a cell that does nothing.
 
 ## Spec gate: checking what the model emits
 
