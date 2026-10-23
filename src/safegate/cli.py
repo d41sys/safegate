@@ -21,6 +21,9 @@ from safegate.adaptive import (
     DEV_BENIGN_PER_DATASET,
     WINDOW_DEV_ATTACKS_PER_DATASET,
     WINDOW_DEV_BENIGN_PER_DATASET,
+    WINDOW_SIZES,
+    WINDOW_STRIDE_DIVISORS,
+    WINDOW_THRESHOLDS,
     Attack,
     Run,
     adoption,
@@ -34,6 +37,7 @@ from safegate.adaptive import (
     select_components,
     select_windows,
     verdict,
+    window_grid,
 )
 from safegate.defence import COMPONENTS, SHIPPED_COMPONENTS, SHIPPED_WINDOWS, DefenceConfig
 from safegate.external import (
@@ -594,7 +598,12 @@ def _dev_windows(args: argparse.Namespace) -> None:
         f"order); both gates pooled; components `{', '.join(components)}`; ASR is the adaptive "
         f"attacker at K = {args.budget} against the defence with windows.\n"
     )
-    base_asr, steps = select_windows(gates, attacks, benign, components, args.budget)
+    grid = window_grid(
+        args.window_sizes or WINDOW_SIZES,
+        args.window_divisors or WINDOW_STRIDE_DIVISORS,
+        args.window_thresholds or WINDOW_THRESHOLDS,
+    )
+    base_asr, steps = select_windows(gates, attacks, benign, components, args.budget, grid)
     print(f"Same defence without windows: ASR {base_asr.fmt()}.\n")
     print("| Size | Stride | Threshold | ASR at K | Worst benign FPR rise | Feasible |")
     print("| ---: | ---: | ---: | --- | ---: | --- |")
@@ -822,6 +831,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--dev-defence",
         action="store_true",
         help="select defence components on a TRAIN subsample (needs --split train)",
+    )
+    p_adv.add_argument(
+        "--window-sizes",
+        type=lambda v: [int(x) for x in v.split(",")],
+        help="--dev-windows grid: comma list of sizes (default 150,300,600)",
+    )
+    p_adv.add_argument(
+        "--window-divisors",
+        type=lambda v: [int(x) for x in v.split(",")],
+        help="--dev-windows grid: stride = size // divisor, comma list (default 2,4)",
+    )
+    p_adv.add_argument(
+        "--window-thresholds",
+        type=lambda v: [float(x) for x in v.split(",")],
+        help="--dev-windows grid: comma list of thresholds (default 0,0.55,0.75,0.95)",
     )
     p_adv.add_argument(
         "--dev-windows",

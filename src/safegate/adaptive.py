@@ -299,12 +299,17 @@ class WindowStep:
     feasible: bool
 
 
-def window_grid() -> list[WindowConfig]:
+def window_grid(
+    sizes: Sequence[int] = WINDOW_SIZES,
+    divisors: Sequence[int] = WINDOW_STRIDE_DIVISORS,
+    thresholds: Sequence[float] = WINDOW_THRESHOLDS,
+) -> list[WindowConfig]:
+    """Every (size, stride = size // divisor, threshold) cell; the defaults are round 1."""
     return [
         WindowConfig(size, size // divisor, threshold)
-        for size in WINDOW_SIZES
-        for divisor in WINDOW_STRIDE_DIVISORS
-        for threshold in WINDOW_THRESHOLDS
+        for size in sizes
+        for divisor in divisors
+        for threshold in thresholds
     ]
 
 

@@ -1014,6 +1014,13 @@ Verdict (rule fixed before scoring): **cheap but does not restore detection**.
 * Whitespace-free scripts are cut at character offsets, not words.
 * Disclosure: before this protocol was committed I timed the gate on 300 TRAIN rows (4.7 ms per call at about 2,000 characters). No TEST row was scored with the new code.
 
+#### Windowed scanning and Unicode confusables: TRAIN development, round 1 (`uv run safegate adaptive-eval --dev-windows --split train`, 19.4 minutes, output in `runs/adaptive_dev_windows.md`)
+
+* **Unicode confusables: kept.** Probe evasions on the 953 TRAIN attacks fell from 685 to 267 of 1,327 blocked-attack/gate pairs (31.5 points, bar 10) for a worst benign FPR rise of +0.1 points (bar 1.0).
+* **Window grid: the rule selects a cell that does nothing.** Same defence without windows: pooled adaptive ASR 57.5% (473/822). Every cell with threshold 0.75 or 0.95 has exactly that ASR (+0.0 to +0.1 points FPR): v2's score for a window it blocks on stage 2 alone stays below 0.75, so those cells add no blocks. Every cell with threshold 0 or 0.55 does help, with ASR 18.7% to 38.8% (size 150: 18.7% to 25.9%; size 300: 24.1% to 30.4%; size 600: 32.4% to 38.8%), but costs +5.4 to +16.7 points of benign FPR against the 3.0-point bar, so none is feasible. The pre-declared selection rule therefore picks size 600, stride 300, threshold 0.95 (ASR 57.5%, FPR +0.1), which would fail the TEST adoption rule by construction.
+
+**Round 2 (declared here, after round 1, before any TEST score).** The feasible-and-helpful region, if there is one, lies between threshold 0.55 and 0.75, and the cost falls with window size (+5.4 at 600 against +16.7 at 150). One more TRAIN-only grid, same sample, same feasibility and selection rules, same TEST adoption rule: size in {450, 600, 900} characters, stride size/2, threshold in {0.60, 0.65, 0.70} (9 cells); `uv run safegate adaptive-eval --dev-windows --split train --window-sizes 450,600,900 --window-divisors 2 --window-thresholds 0.6,0.65,0.7`. There is no round 3: whatever the rule selects here is scored on TEST, helpful or not.
+
 ## Spec gate: checking what the model emits
 
 The text gate reads what goes into the model. When an LLM turns text into a machine-readable specification for an optimiser or controller, the structured output can be checked deterministically before it is used. `safegate spec-check` applies a strict YAML policy of contract bounds to the emitted constraint JSON:
