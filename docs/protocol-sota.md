@@ -116,3 +116,26 @@ mismatch between papers), GenTel-Bench (evaluated subset unstated), the AgentDoj
 rebuild of arXiv 2610.03448 (needs those frameworks), and static attack-success rates of
 fine-tuned generators. The list with sources is printed by `safegate benchmark` and kept in
 `docs/sota-review.md`.
+
+## Amendments after scoring
+
+The rules above were fixed before any metric was computed (commit `3a722ef`). The scoring run
+(`runs/sota-public.md`, not committed) then showed three things that changed what the report
+prints. Nothing below changed a score or a threshold.
+
+1. **TPR at a fixed FPR, second rule.** The strict rule (the highest TPR whose FPR is at most the
+   target) gives 0.00% at 0.5% FPR on PromptShield, because 1,311 attacks and 86 benign prompts
+   share the top score (stage-1 regex hits): the gate has no operating point between 0% and
+   0.505% FPR. The PromptShield paper reads its numbers with a tolerance (FPR up to 1.25 times the
+   target; `PAPER_TOLERANCE = 0.25` in `metrics.py`), so rows under that rule were added, marked
+   "yes, added after scoring". Both rules are printed; the strict row is still the pre-registered
+   one. Result under the tolerance rule: 20.21% (achieved FPR 0.581%) at 0.5% FPR, 20.21% / 20.40% at 1%;
+   0.00% at 0.1% and 0.05% under both.
+2. **Leak expectation was wrong for HarmBench.** Section "Contamination" expects HarmBench to match
+   neuralchemy heavily. The measured exact-text overlap is 5/239. The larger leaks are xTRam1
+   (110/2,060), jackhhao (99/262) and JailbreakBench (130/200).
+3. **Presentation only.** The source column was shortened and a "Sources and their caveats" list
+   (who ran each number, harness and variant caveats) was added after the tables; an AUC that is not
+   defined prints `n/a` instead of `nan`; the ACL 2025 camera-ready NotInject baselines of four
+   guards are printed next to the arXiv v3 ones. The ranking score, the configurations, the
+   comparability rule and the decision rules are unchanged.

@@ -59,7 +59,11 @@ flowchart LR
 | `defence.py` | Cheap input normalisation (invisible-character strip, NFKC, confusable folding with the gate's, the attacker's and the Unicode table, separator collapse, leet fold, base64/rot13 decode-and-rescan) that adds extra views for the gate to judge, plus optional windowed scanning (`DefenceConfig.windows`, not shipped); `SafetyGate(defence=...)` applies it |
 | `windows.py` | Overlapping character windows (`split_windows`), max aggregation (`max_score`) and `WindowConfig`; used by the defence |
 | `fresh.py` | Fresh public data for the window protocol and the benchmark: pinned-revision loaders for SPML, Gandalf, BIPIA, WildGuard benign, Dolly and NotInject, cached in `data/raw/`, cleaned against the repository's own datasets |
-| `benchmark.py` | `safegate benchmark` (the InjecGuard paper's three public metrics next to its published guard scores) and `safegate window-eval` (windows 150:37:0 on fresh data with the fixed rule) |
+| `benchmark.py` | `safegate benchmark` for the InjecGuard paper's three public metrics next to its published guard scores (`--suite injecguard`) and `safegate window-eval` (windows 150:37:0 on fresh data with the fixed rule) |
+| `publicsets.py` | Pinned-revision loaders for the nine further public sets (PromptShield, deepset, jackhhao, xTRam1, S-Labs, JailbreakBench, Gandalf test, HarmBench, ToxicChat), cached in `data/raw/`, with the exact-text overlap count against the gate's training data |
+| `metrics.py` | AUC with mid-ranks, TPR at fixed FPR (strict rule and the paper's 25% tolerance), F1 and bootstrap intervals, in numpy |
+| `published.py` | Published guard scores with source link, date, who ran them and a comparability flag; the "not comparable" list |
+| `sota.py` | `safegate benchmark --suite public` (or `all`): scores safegate on the nine sets and prints the comparable and not-comparable tables and the source caveats |
 | `confusables.py` | Unicode UTS #39 confusables fold (`fold`, `load`) and the generator of the vendored table `data/confusables_ascii.txt` (848 characters, 7 KB, Unicode License v3) |
 | `data/injection_train.jsonl` | 403 self-written samples: 202 attacks (about 25 per category) and 201 benign |
 | `data/stage2_v2.npz` | pooled v2 weights and thresholds fitted on the bundled set plus the TRAIN splits of deepset, jailbreak, itw and neuralchemy (no text inside); rebuilt by `safegate stage2-train` |
@@ -80,7 +84,7 @@ uv run safegate stage2-report  # legacy diagnosis + scenarios (a)-(d) on public 
 uv run safegate stage2-train   # rebuild src/safegate/data/stage2_v2.npz from the four TRAIN splits
 uv run safegate adaptive-eval  # rule-based adaptive attacker on the public TEST splits (cached data/raw, no network)
 uv run safegate check --defence shipped "Ignore all previous instructions"   # the input defence in front of the gate (also on run, redteam, refusal-eval, external-eval; --windows SIZE:STRIDE:THRESHOLD adds windows)
-uv run safegate benchmark     # the InjecGuard paper's public sets, next to published guards (downloads pinned revisions once)
+uv run safegate benchmark     # the InjecGuard paper's public sets next to published guards (downloads pinned revisions once); `--suite all` adds nine more sets, see "Comparison with SOTA"
 uv run safegate window-eval   # windows 150:37:0 on fresh data, with the rule fixed in docs/protocol-window-150.md
 uv run safegate spec-check examples/spec/genuine.json --policy examples/spec/policy.yaml
 uv run pytest -q
@@ -95,6 +99,73 @@ gate = SafetyGate(audit_log_path="runs/audit.jsonl")
 safe_llm = gate.wrap(MockStreamingLLM())
 print("".join(safe_llm("tell me about heat pumps")))
 ```
+
+## Comparison with SOTA
+
+**Verdict first: safegate is not competitive with fine-tuned guards on detection. Its advantages are false positives on benign text, cost and inspectability.** Across the twelve public sets scored here (three from the InjecGuard paper, nine further ones) it beats only the weakest published guards: ProtectAI v1 and v2 on PromptShield AUC, Prompt Guard 2 86M on deepset and Prompt Guard 2 22M on S-Labs. It ties InjecGuard at 1% FPR on PromptShield. It loses to PIGuard, Prompt Guard 2 86M, Sentinel and the fine-tuned PromptShield models on most other sets, and by a wide margin at low false-positive rates. It is a 2 ms, model-free, inspectable pre-filter, not a replacement for a fine-tuned guard.
+
+The protocol was committed before any score ([`docs/protocol-sota.md`](docs/protocol-sota.md), commit `3a722ef`). The 2023-2026 literature (detectors, system defences, adaptive attacks, benchmarks) with every source and version is in [`docs/sota-review.md`](docs/sota-review.md). No guard model was downloaded or run: published numbers only, from pages opened and cited in the CLI output, and a published row is printed next to ours only if the set, split, metric and cutoff are identical. Everything else is printed in a separate "not comparable" table with the reason.
+
+```bash
+uv run safegate benchmark --suite all --stage2 both   # everything below: about 6 minutes, downloads pinned revisions once (under 300 MB) into data/raw/
+uv run safegate benchmark --suite public              # only the nine further sets
+uv run safegate benchmark --suite promptshield --stage2 v2   # one set, default gate
+uv run safegate adaptive-eval                         # the adaptive-attack result in the last table
+```
+
+### 1. The InjecGuard paper's sets (accuracy; PIGuard, arXiv 2410.22770 v3, Table 1 and Table 7)
+
+| Set | Safegate default (v2) | Safegate legacy | PIGuard | Best published |
+| --- | --- | --- | --- | --- |
+| NotInject (benign over-defense accuracy) | 94.4% (320/339) | 62.8% | 87.32% | LlamaGuard3 99.71% |
+| WildGuard benign accuracy | 91.1% (885/971) | 73.4% | 76.11% | LlamaGuard3 95.16% |
+| BIPIA injection accuracy | **8.3%** | 64.3% | 68.34% | Deepset 84.67% |
+| Mean of the three | 64.6% | 66.9% | 77.3% | GPT-4o 79.0% |
+
+Four baselines on NotInject changed between the arXiv version and the ACL 2025 camera-ready (Fmops 5.60 to 28.32, Deepset 5.31 to 29.50, PromptGuard 0.88 to 0.29, ProtectAI v2 56.64 to 57.23); the CLI prints both. The conclusion does not change: 94.4% is above every guard except LlamaGuard3 on NotInject. Where we lose: BIPIA, the indirect-injection set, where the default gate catches 8.3%, because its attacks are task-like instructions without attack wording.
+
+### 2. Nine further public sets (PromptShield, deepset, jackhhao, xTRam1, S-Labs, JailbreakBench, Gandalf, HarmBench, ToxicChat)
+
+Rows are the official test splits at pinned revisions, uncleaned. Ranking score for AUC and TPR@FPR: `2*flagged + detection_score`, ties mid-ranked; gate alone. Intervals are bootstrap or Wilson 95%. "Best published" is the best comparable row of the same metric; the CLI prints all of them with links.
+
+| Set (metric) | Safegate v2 (default) | Safegate legacy | Best published, same protocol | Result |
+| --- | --- | --- | --- | --- |
+| PromptShield test, 23,516 rows (AUC) | 0.748 [0.742, 0.754] | 0.664 | PromptShield Llama 0.998; DeBERTa 0.976; PromptGuard v1 0.874; InjecGuard 0.765; Fmops 0.754; ProtectAI v2 0.705 | beats ProtectAI v1 and v2 (0.646, 0.705), ties Fmops, loses to the rest |
+| PromptShield, TPR at 1% FPR | 20.21% | 20.32% | InjecGuard 20.37%; PromptShield Llama 94.80% | ties InjecGuard, loses by 75 points to the purpose-built model |
+| PromptShield, TPR at 0.5% / 0.1% / 0.05% FPR (strict) | 0.00% | 0.00% | PromptShield models 87.8 / 65.3 / 47.5 | loses. 1,311 attacks and 86 benign prompts share the top stage-1 regex score, so the gate has no threshold between 0.1% and 0.5% FPR: 0.00% under the strict rule fixed before scoring; 20.2% (achieved FPR 0.58%) under the paper's 25%-tolerance rule, a row added after scoring and marked as such |
+| deepset test, 116 rows (F1) | 0.462 [0.329, 0.597], precision 1.0, recall 0.30 | 0.558 | pangolin 0.868, Sentinel 0.857, PIGuard 0.800, ProtectAI v2 0.537, Prompt Guard 2 86M 0.235 | loses to pangolin, Sentinel and PIGuard; beats Prompt Guard 2 86M (0.235) on the default gate; inconclusive against ProtectAI v2 |
+| jackhhao balanced test, 262 rows (F1) | 0.921 [0.887, 0.951]; 0.835 on the 163 rows outside its training data | 0.679 | Prompt Guard 2 86M 0.967, PIGuard 0.957, ProtectAI v2 0.911 | loses to Prompt Guard 2 and PIGuard, inconclusive against ProtectAI v2; 99/262 rows are in our training data, so the 0.921 is optimistic |
+| xTRam1 test, 2,060 rows (AUC) | 0.739 | 0.845 | bastion 0.998, Sentinel 0.988, Prompt Guard 2 86M 0.973, 22M 0.893 | loses to all; the v2 gate scores below legacy here (110 rows are in its training data) |
+| S-Labs test, 2,101 rows (AUC) | 0.823 [0.805, 0.840] | 0.869 | bastion 0.996, Sentinel 0.944, Prompt Guard 2 86M 0.922, fmops 0.907, 22M 0.772 | beats Prompt Guard 2 22M (0.772) on both gates; loses to everything else |
+| Gandalf ignore-instructions test, 112 attacks (recall only) | 86.6% (97/112) | 99.1% | ProtectAI v2 100%, Sentinel 100%, Prompt Guard 2 86M 97.3%, PIGuard 95.5% | legacy ties the top; recall rewards flagging everything and says nothing about false positives |
+| JailbreakBench Behaviors, 200 rows (AUC) | 0.491 | 0.419 | bastion 0.986, Sentinel 0.893, Prompt Guard 2 86M 0.754 | chance level: harm requests, outside what safegate is built for |
+| HarmBench, 239 rows (F1) | 0.000 (0/239) | 0.340 | WildGuard 98.9, Llama Guard 3 about 99, Llama Guard 4 97.2, ShieldGemma-9B 60.6 | loses; scope, not a bug: the gate detects injection, not harm |
+| ToxicChat test, 2,853 rows (F1) | 0.301 [0.252, 0.346] | 0.205 | Qwen3Guard 82.8, GuardReasoner-8B 78.8, WildGuard 70.8, Llama Guard 3 about 53, OpenAI Moderation 25.4 | loses to every harm guard; inconclusive against OpenAI Moderation |
+
+What the table says in plain terms:
+
+1. **We win on cost and false positives, not on detection.** The default gate has 0/56 benign false positives on deepset and 94.4% on NotInject, and runs in about 2 ms per prompt on a CPU with weights that contain no text. No model guard does either.
+2. **We lose on ranking quality.** AUC is 0.74 to 0.87 where the model guards score 0.90 to 0.998. A hashed n-gram model cannot generalise to paraphrase, other languages or unseen styles; the pooled-training gain over the legacy gate is real on in-domain data and does not carry over (v2 is worse than legacy on xTRam1 and S-Labs).
+3. **We lose at low false-positive rates.** At 0.5% FPR and below the gate detects nothing on PromptShield; the best published detector at 1% FPR reaches 94.8%. A deployment that tolerates 0.1% FPR cannot use this gate alone.
+4. **Harm detection is outside the scope.** JailbreakBench, HarmBench and ToxicChat are printed to make the scope visible: the gate flags 79.1% (72/91) of ToxicChat's jailbreak prompts and almost nothing else.
+5. **Some of our own numbers are inflated by overlap with training data.** jackhhao 99/262 rows, xTRam1 110/2,060, JBB 130/200 are in our training data; the CLI also scores the remaining rows as a "not comparable (subset)" row. Published guards that trained on a set (PIGuard on deepset, jackhhao and xTRam1 TRAIN; ProtectAI v2 on xTRam1) are marked and not removed.
+
+Unscored, with the reason: PINT and the Prompt Guard 2 and LlamaFirewall evaluations (private data), WildGuardTest and the Qualifire benchmark (gated), Aegis 2.0 (redacted rows), GenTel-Bench (evaluated subset not stated).
+
+### 3. Adaptive attacks: not comparable, but informative
+
+The published attackers are far stronger (LLM-guided search with hundreds of queries, RL, gradients, human red teams) and measure detector and model together, so none of the numbers below is set against ours as a score. They show scale.
+
+| Source | Attacker | Result against detectors |
+| --- | --- | --- |
+| "The Attacker Moves Second" (arXiv 2510.09023 v1, 10 Oct 2025), Table 7 | search, 800 queries; AgentDojo 80 samples | search ASR 49-99%: PIGuard 49-71, Prompt Guard 2 75-99, ProtectAI 81-94, Model Armor 56-90 |
+| Zhan et al. (arXiv 2503.00061 v2, 4 Mar 2025) | white-box GCG and AutoDAN | all eight defences above 50% adaptive ASR; fine-tuned detector 20 to 84% |
+| Hackett et al. (arXiv 2504.11168 v3, 14 Jul 2025) | one text transformation, no cap | 20-88% average evasion across six guardrails; emoji smuggling 100% |
+| PISmith (arXiv 2603.13026 v2, 23 Jul 2026) | black-box RL | PIGuard ASR@10 0.92, Prompt Guard 0.96, PromptArmor 1.00 |
+| **safegate `adaptive-eval`** (this repository) | nine rule families, 20 queries, block/allow only, no LLM | **100.0% (747/747)** of blocked attacks evaded undefended (median 2 queries); **63.2% (472/747)** with the shipped normaliser; legacy gate 97.5% and 62.9% |
+
+Reading: the direction agrees with the literature (no detector survives an adaptive attacker) and safegate's cheap rule-based attacker already reaches 100% against the undefended default gate. The normaliser restores 91.5-99.4% of character-level evasions and leaves benign-text padding, which evades 42.2% in a single query.
+
 
 ## Results
 
@@ -1229,9 +1300,10 @@ Rule: padding evasion falls by **48.0 points**: pass. Pooled benign FPR rises by
 **Question.** How does safegate compare with other prompt-injection guards that have published scores on public data? The only comparison made here is one the authors of another system already ran: the **InjecGuard paper** (Li and Liu, arXiv 2410.22770 v3, 30 Mar 2025; the code and its evaluation files are in github.com/leolee99/InjecGuard, now `PIGuard`) reports accuracy of nine guards on NotInject, WildGuard benign, BIPIA and PINT. Three of those four sets are public. safegate is scored with the **same files and the same metric** (the repository's `eval.py`: accuracy = share of prompts classified correctly, NotInject and BIPIA as the mean of their subset accuracies). "Flagged" is the gate's `refuse` or `escalate`, as everywhere in this README. No other guard was run: the published numbers are transcribed from **Table 1 (PDF p. 7)** for NotInject and **Table 7 (PDF p. 16)** for WildGuard and BIPIA, and I checked Table 1 against Table 7 (agreement to rounding in all rows, except LakeraGuard's Malicious column, where the paper is 1.0 point off itself; that column is not used). The protocol is in `docs/protocol-window-150.md`, Part B, committed before any score.
 
 ```bash
-uv run safegate benchmark                          # default gate: three suites, gate alone / shipped defence / shipped + windows 150:37:0
-uv run safegate benchmark --stage2 legacy
+uv run safegate benchmark --suite injecguard        # both gates: three suites, gate alone / shipped defence / shipped + windows 150:37:0
+uv run safegate benchmark --suite injecguard --stage2 legacy
 uv run safegate benchmark --suite notinject        # also bipia, wildguard
+# `--stage2` defaults to both gates; the nine further sets are in "Comparison with SOTA" above
 ```
 
 Tables are sorted by score within each metric. Safegate rows: the first three configurations are "gate alone" (what `safegate check` does by default), "shipped defence, no windows" (the eight normalisation components of `--defence shipped`) and the same plus windows 150:37:0 (rejected as default above). Intervals are Wilson 95%; the BIPIA score is a mean of two accuracies, so it has no single interval (text: 75 prompts, code: 50). The published rows have no interval, because the paper gives none and does not state the subset sizes (113 per NotInject subset is on the dataset card; BIPIA and WildGuard sizes come from the repository's files).
