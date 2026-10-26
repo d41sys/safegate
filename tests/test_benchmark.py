@@ -294,7 +294,20 @@ def test_cli_benchmark_all_suites_legacy(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_caches(tmp_path)
-    assert main(["benchmark", "--cache-dir", str(tmp_path), "--stage2", "legacy"]) == 0
+    assert (
+        main(
+            [
+                "benchmark",
+                "--suite",
+                "injecguard",
+                "--cache-dir",
+                str(tmp_path),
+                "--stage2",
+                "legacy",
+            ]
+        )
+        == 0
+    )
     out = capsys.readouterr().out
     for title in ("NotInject over-defense", "BIPIA injection", "WildGuard benign"):
         assert title in out
@@ -324,3 +337,17 @@ def test_cli_adaptive_eval_fresh_uses_the_fresh_pools(
     out = capsys.readouterr().out
     assert "(FRESH split)" in out and "`spml`" in out and "`gandalf`" in out
     assert main([*argv, "--dev-defence", "--split", "train"]) == 2
+
+
+def test_acl_camera_ready_baselines_match_their_table_7_subsets_and_change_four_guards() -> None:
+    changed = [g for g in B.PUBLISHED if g.acl_over_defense is not None]
+    assert [g.name for g in changed] == ["Deepset", "Fmops", "PromptGuard", "ProtectAIv2"]
+    for g in changed:
+        assert g.acl_notinject is not None and g.acl_over_defense is not None
+        assert sum(g.acl_notinject) / 3 == pytest.approx(g.acl_over_defense, abs=0.02), g.name
+    rows = B.run_benchmark("legacy", toy_fresh(), list(B.SUITES.values()))
+    arxiv, acl = dict(B.derived_means(rows)), dict(B.derived_means(rows, acl=True))
+    assert acl["InjecGuard"] == arxiv["InjecGuard"]  # the PIGuard row is unchanged
+    assert acl["Fmops"] > arxiv["Fmops"] + 7  # 28.32 against 5.60 over three metrics
+    texts = [r[1] for r in B.comparison_rows(rows, [B.SUITES["notinject"]]) if r[0] == "Fmops"]
+    assert len(texts) == 2 and "aclanthology.org" in texts[1]

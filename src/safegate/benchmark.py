@@ -118,6 +118,10 @@ def score_suite(suite: Suite, fresh: Fresh, blocks: Blocks) -> SuiteScore:
 PAPER = "InjecGuard paper (arXiv 2410.22770 v3)"
 TABLE_1 = f"{PAPER}, Table 1, p. 7"
 TABLE_7 = f"{PAPER}, Table 7, p. 16"
+ACL_TABLE_1 = (
+    "[PIGuard ACL 2025 camera-ready](https://aclanthology.org/2025.acl-long.1468.pdf), "
+    "Table 1, PDF p. 8, Jul 2025"
+)
 PINT_README = "lakeraai/pint-benchmark README @0efab3f"
 
 
@@ -133,13 +137,61 @@ class PublishedGuard:
     pint_injection: float
     pint_overall: float
     bipia: float  # Table 7, "BIPIA Injection"
+    # The ACL camera-ready re-ran four baselines on NotInject (Table 1, with Table 7 per subset);
+    # arXiv v1-v3 print the values above. WildGuard, PINT and BIPIA columns are unchanged.
+    acl_over_defense: float | None = None
+    acl_notinject: tuple[float, float, float] | None = None
 
 
 PUBLISHED: tuple[PublishedGuard, ...] = (
-    PublishedGuard("Deepset", (5.31, 7.08, 3.54), 5.31, 50.98, 17.13, 98.32, 57.73, 84.67),
-    PublishedGuard("Fmops", (5.31, 5.31, 6.19), 5.60, 50.88, 18.38, 98.32, 58.35, 88.67),
-    PublishedGuard("PromptGuard", (2.65, 0.00, 0.00), 0.88, 6.69, 46.94, 94.19, 70.56, 100.00),
-    PublishedGuard("ProtectAIv2", (76.11, 47.79, 46.02), 56.64, 75.18, 97.22, 88.53, 92.88, 8.67),
+    PublishedGuard(
+        "Deepset",
+        (5.31, 7.08, 3.54),
+        5.31,
+        50.98,
+        17.13,
+        98.32,
+        57.73,
+        84.67,
+        29.50,
+        (23.89, 52.21, 12.39),
+    ),
+    PublishedGuard(
+        "Fmops",
+        (5.31, 5.31, 6.19),
+        5.60,
+        50.88,
+        18.38,
+        98.32,
+        58.35,
+        88.67,
+        28.32,
+        (18.58, 53.10, 13.27),
+    ),
+    PublishedGuard(
+        "PromptGuard",
+        (2.65, 0.00, 0.00),
+        0.88,
+        6.69,
+        46.94,
+        94.19,
+        70.56,
+        100.00,
+        0.29,
+        (0.88, 0.00, 0.00),
+    ),
+    PublishedGuard(
+        "ProtectAIv2",
+        (76.11, 47.79, 46.02),
+        56.64,
+        75.18,
+        97.22,
+        88.53,
+        92.88,
+        8.67,
+        57.23,
+        (77.88, 47.79, 46.02),
+    ),
     PublishedGuard("LakeraGuard", (90.27, 92.92, 79.64), 87.61, 82.60, 99.18, 96.38, 97.78, 12.00),
     PublishedGuard("GPT-4o", (95.58, 85.84, 78.76), 86.73, 84.24, 97.31, 92.19, 94.75, 66.00),
     PublishedGuard("Llama-2-chat", (82.30, 79.65, 67.26), 76.40, 74.07, 47.99, 21.84, 34.92, 40.34),
@@ -259,6 +311,16 @@ def comparison_rows(rows: Sequence[BenchmarkRow], suites: Sequence[Suite]) -> li
             out.append(
                 (g.name, source, suite.metric, f"{getter(g):.2f}%", "yes (same files, same metric)")
             )
+            if suite.key == "notinject" and g.acl_over_defense is not None:
+                out.append(
+                    (
+                        g.name,
+                        ACL_TABLE_1,
+                        suite.metric,
+                        f"{g.acl_over_defense:.2f}%",
+                        "yes (same files, same metric); re-run by the authors for the ACL version",
+                    )
+                )
     return out
 
 
@@ -284,11 +346,16 @@ def print_comparison(rows: Sequence[tuple[str, ...]], out: TextIO | None = None)
     print(file=out)
 
 
-def derived_means(rows: Sequence[BenchmarkRow]) -> list[tuple[str, float]]:
+def _over_defense(g: PublishedGuard, acl: bool) -> float:
+    return g.acl_over_defense if acl and g.acl_over_defense is not None else g.over_defense
+
+
+def derived_means(rows: Sequence[BenchmarkRow], acl: bool = False) -> list[tuple[str, float]]:
     """Per system, the mean of the three public headline metrics (%), best first.
 
     Only when ``rows`` cover every suite. Published guards use Table 1's over-defense column and
-    Table 7's WildGuard and BIPIA columns.
+    Table 7's WildGuard and BIPIA columns; with ``acl`` the four baselines the ACL camera-ready
+    re-ran use its NotInject values.
     """
     per_config: dict[tuple[str, str], dict[str, float]] = {}
     for r in rows:
@@ -300,7 +367,7 @@ def derived_means(rows: Sequence[BenchmarkRow]) -> list[tuple[str, float]]:
     ]
     if not ours:
         return []
-    theirs = [(g.name, (g.over_defense + g.wildguard + g.bipia) / 3) for g in PUBLISHED]
+    theirs = [(g.name, (_over_defense(g, acl) + g.wildguard + g.bipia) / 3) for g in PUBLISHED]
     return sorted([*ours, *theirs], key=lambda x: -x[1])
 
 
@@ -330,10 +397,11 @@ def print_benchmark(
     if derived:
         print("### Derived: unweighted mean of the three public metrics\n")
         print("Computed here from the numbers above; the paper does not publish it.\n")
-        print("| System | Mean of NotInject, WildGuard benign, BIPIA |")
-        print("| --- | --- |")
+        derived_acl = dict(derived_means(rows, acl=True))
+        print("| System | Mean, arXiv v3 baselines | Mean, ACL camera-ready baselines |")
+        print("| --- | --- | --- |")
         for name, value in derived:
-            print(f"| {name} | {value:.2f}% |")
+            print(f"| {name} | {value:.2f}% | {derived_acl[name]:.2f}% |")
         print()
     print("### Not comparable: the PINT leaderboard\n")
     print_comparison(pint_rows())

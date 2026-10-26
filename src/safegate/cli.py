@@ -72,6 +72,7 @@ from safegate.lodo import (
 from safegate.mock_llm import MockStreamingLLM
 from safegate.perturb import homoglyph_unlisted, homoglyph_unseen, rng_for
 from safegate.refusal import RefusalEvaluator
+from safegate.sota import SOTA_KEYS, print_sota, resolve_suites, run_sota
 from safegate.spec import check_spec, load_spec_policy
 from safegate.stage2_eval import (
     DATASET_KEYS,
@@ -691,10 +692,16 @@ def cmd_adaptive_eval(args: argparse.Namespace) -> int:
 
 
 def cmd_benchmark(args: argparse.Namespace) -> int:
-    """Score the gate on the public sets of the InjecGuard paper, next to its published guards."""
-    suites = list(SUITES.values()) if args.suite == "all" else [SUITES[args.suite]]
-    fresh = load_for_cli(args.cache_dir, args.refresh)
-    print_benchmark(args.stage2, fresh, run_benchmark(args.stage2, fresh, suites), suites)
+    """Score the gate on public sets next to published guards (``docs/protocol-sota.md``)."""
+    stages = tuple(STAGE2_MODES) if args.stage2 == "both" else (args.stage2,)
+    suites, public = resolve_suites(args.suite)
+    if suites:
+        fresh = load_for_cli(args.cache_dir, args.refresh)
+        for stage2 in stages:
+            print_benchmark(stage2, fresh, run_benchmark(stage2, fresh, suites), suites)
+    if public:
+        data, scores = run_sota(stages, public, args.cache_dir, args.refresh)
+        print_sota(data, scores, public)
     return 0
 
 
@@ -895,10 +902,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_bench = sub.add_parser(
         "benchmark",
-        parents=[stage2_opt],
-        help="Score the gate on the InjecGuard paper's public sets, next to published guards",
+        help="Score the gate on public sets, next to the published scores of other guards",
     )
-    p_bench.add_argument("--suite", choices=(*SUITES, "all"), default="all")
+    p_bench.add_argument(
+        "--stage2",
+        choices=(*STAGE2_MODES, "both"),
+        default="both",
+        help="stage-2 model: v2 (shipped default), legacy or both (default)",
+    )
+    p_bench.add_argument(
+        "--suite",
+        choices=(*SUITES, *SOTA_KEYS, "injecguard", "public", "all"),
+        default="all",
+        help="one set, `injecguard` (the paper's three), `public` (the further sets) or all",
+    )
     p_bench.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
     p_bench.add_argument("--refresh", action="store_true", help="re-download even if cached")
     p_bench.set_defaults(func=cmd_benchmark)
