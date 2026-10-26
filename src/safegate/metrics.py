@@ -99,12 +99,14 @@ class TprAtFpr:
     threshold: float  # flag when score >= threshold; ``inf`` when no threshold qualifies
 
 
-def tpr_at_fpr(labels: Sequence[bool], scores: Sequence[float], target: float) -> TprAtFpr:
-    """Highest TPR with FPR <= ``target``; thresholds sit between distinct score values.
+def tpr_at_fpr(
+    labels: Sequence[bool], scores: Sequence[float], target: float, tolerance: float = 0.0
+) -> TprAtFpr:
+    """Highest TPR with FPR <= ``target * (1 + tolerance)``; thresholds sit between scores.
 
-    PromptShield picks a threshold whose FPR is "close to" the target (within 25%) by
-    interpolation; this takes the closest threshold from below instead, which is never above the
-    target and so never flatters the detector. 0.0 when even the highest score exceeds the target.
+    With ``tolerance`` 0 the FPR never exceeds the target, so it never flatters the detector.
+    PromptShield accepts a threshold whose FPR is within 25% of the target (``tolerance`` 0.25).
+    0.0 when even the highest score exceeds the allowed FPR.
     """
     y = np.asarray(labels, dtype=np.bool_)
     s = np.asarray(scores, dtype=np.float64)
@@ -119,7 +121,7 @@ def tpr_at_fpr(labels: Sequence[bool], scores: Sequence[float], target: float) -
     last = np.flatnonzero(np.r_[ss[1:] != ss[:-1], True])  # last row of each distinct score
     tpr = tp_c[last] / n_pos
     fpr = fp_c[last] / n_neg
-    ok = np.flatnonzero(fpr <= target + 1e-12)
+    ok = np.flatnonzero(fpr <= target * (1 + tolerance) + 1e-12)
     if len(ok) == 0:
         return TprAtFpr(target, 0.0, 0.0, math.inf)
     best = int(ok[-1])  # the lowest threshold still within the target has the highest TPR

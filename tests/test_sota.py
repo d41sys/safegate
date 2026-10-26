@@ -381,3 +381,38 @@ def test_cli_benchmark_harm_sets_report_recall_based_f1(
 def test_cli_benchmark_rejects_unknown_suites() -> None:
     with pytest.raises(SystemExit):
         main(["benchmark", "--suite", "nonsense"])
+
+
+def test_tpr_tolerance_accepts_an_fpr_just_above_the_target() -> None:
+    # one of 200 benign rows ties with every attack at the top: FPR 0.5%
+    labels = [True] * 10 + [False] * 200
+    scores = [1.0] * 10 + [1.0] * 2 + [0.1] * 198
+    strict = M.tpr_at_fpr(labels, scores, 0.005)
+    loose = M.tpr_at_fpr(labels, scores, 0.005, tolerance=0.25)
+    assert strict.tpr == 0.0 and loose.tpr == 0.0  # 1% FPR is 2x the target: out of tolerance
+    scores = [1.0] * 10 + [1.0] + [0.1] * 199
+    assert M.tpr_at_fpr(labels, scores, 0.004).tpr == 0.0
+    assert M.tpr_at_fpr(labels, scores, 0.004, tolerance=0.25).tpr == 1.0  # 0.5% <= 0.5%
+
+
+def test_tpr_rows_come_in_two_flavours_strict_then_the_papers_tolerance() -> None:
+    # 10 attacks and 6 of 1,000 benign rows tie at the top: FPR 0.6% against a 0.5% target
+    labels = [True] * 10 + [False] * 1000
+    scores = [2.9] * 16 + [0.1] * 994
+    rows = [F.FreshRow("promptshield", "test", f"t{i}", labels[i]) for i in range(len(labels))]
+    s = S.score_set(rows, lambda t: (True, scores[int(t[1:])]), set(), "v2", "gate alone")
+    got = S.safegate_rows(S.SUITE_BY_KEY["promptshield"], S.TPR[1], [s])  # TPR at 0.5% FPR
+    assert [round(v, 3) for v, _ in got] == [0.0, 1.0]
+    assert "added after scoring" in got[1][1][4] and "x target" in got[1][1][2]
+
+
+def test_report_lists_the_caveats_of_the_sources_it_used(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_public_caches(tmp_path)
+    assert (
+        main(["benchmark", "--suite", "deepset", "--stage2", "v2", "--cache-dir", str(tmp_path)])
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "### Sources and their caveats" in out and "sells a competing model" in out

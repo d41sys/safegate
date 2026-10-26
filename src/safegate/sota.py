@@ -45,6 +45,7 @@ from safegate.published import (
 Judge = Callable[[str], tuple[bool, float]]  # text -> (flagged, ranking score)
 RANK_BONUS = 2.0  # a flagged prompt outranks every allowed one (detector scores are in [0, 1])
 SHIPPED = DefenceConfig.of(SHIPPED_COMPONENTS)
+PAPER_TOLERANCE = 0.25  # PromptShield accepts a threshold whose FPR is within 25% of the target
 
 
 @dataclass(frozen=True)
@@ -216,7 +217,7 @@ def system_name(stage2: str, config: str, extra: str = "") -> str:
     return f"safegate {gate}, {config}{extra}"
 
 
-def value_of(metric: Metric, s: SetScore) -> float:
+def value_of(metric: Metric, s: SetScore, tolerance: float = 0.0) -> float:
     """The metric as a fraction (NaN when the defence row has no ranking score)."""
     c = s.confusion()
     if metric.kind == "f1":
@@ -228,7 +229,7 @@ def value_of(metric: Metric, s: SetScore) -> float:
     if metric.kind == "auc":
         return roc_auc(s.labels, s.scores)
     assert metric.target is not None
-    return tpr_at_fpr(s.labels, s.scores, metric.target).tpr
+    return tpr_at_fpr(s.labels, s.scores, metric.target, tolerance).tpr
 
 
 def has_ranking(metric: Metric, s: SetScore) -> bool:
@@ -236,7 +237,7 @@ def has_ranking(metric: Metric, s: SetScore) -> bool:
     return metric.kind not in ("auc", "tpr") or s.config == "gate alone"
 
 
-def score_cell(metric: Metric, s: SetScore) -> str:
+def score_cell(metric: Metric, s: SetScore, tolerance: float = 0.0) -> str:
     """The score of a safegate row as printed, with its interval or achieved FPR."""
     c = s.confusion()
     if metric.kind == "f1":
@@ -254,7 +255,7 @@ def score_cell(metric: Metric, s: SetScore) -> str:
         lo, hi = auc_ci(s.labels, s.scores)
         return f"{roc_auc(s.labels, s.scores):.3f} [{lo:.3f}, {hi:.3f}]"
     assert metric.target is not None
-    t = tpr_at_fpr(s.labels, s.scores, metric.target)
+    t = tpr_at_fpr(s.labels, s.scores, metric.target, tolerance)
     return f"{t.tpr:.2%} (achieved FPR {t.fpr:.3%})"
 
 
@@ -282,18 +283,24 @@ def safegate_rows(
         for extra, sc, comparable in variants:
             if len(set(sc.labels)) < 2 and metric.kind in ("auc", "tpr"):
                 continue
-            out.append(
-                (
-                    value_of(metric, sc),
+            for tolerance in (0.0, PAPER_TOLERANCE) if metric.kind == "tpr" else (0.0,):
+                label = metric.label
+                if tolerance:
+                    label += f"; FPR up to {1 + tolerance:.2f} x target, the paper's rule"
+                out.append(
                     (
-                        system_name(s.stage2, s.config, extra),
-                        f"this repository, `safegate benchmark --suite {suite.key}`",
-                        metric.label,
-                        score_cell(metric, sc),
-                        comparable,
-                    ),
+                        value_of(metric, sc, tolerance),
+                        (
+                            system_name(s.stage2, s.config, extra),
+                            f"this repository, `safegate benchmark --suite {suite.key}`",
+                            label,
+                            score_cell(metric, sc, tolerance),
+                            comparable
+                            if not tolerance
+                            else comparable.replace("yes (", "yes, added after scoring (", 1),
+                        ),
+                    )
                 )
-            )
     return out
 
 
@@ -348,7 +355,10 @@ def extras_table(suite: SuiteSpec, scores: Sequence[SetScore], out: TextIO) -> N
         if s.set_key != suite.key:
             continue
         c = s.confusion()
-        auc = f"{roc_auc(s.labels, s.scores):.3f}" if s.config == "gate alone" else "n/a"
+        has_both = len(set(s.labels)) == 2
+        auc = (
+            f"{roc_auc(s.labels, s.scores):.3f}" if s.config == "gate alone" and has_both else "n/a"
+        )
         fpr = Rate(c.fp, c.fp + c.tn).fmt() if c.fp + c.tn else "n/a (no benign rows)"
         print(
             f"| {system_name(s.stage2, s.config)} | {c.tp + c.fp}/{len(s.labels)} "
@@ -414,6 +424,12 @@ def print_sota(
         print("Safegate in detail:\n", file=out)
         extras_table(suite, scores, out)
         group_table(suite, scores, out)
+    used = {p.source for p in PUBLISHED if p.suite in keys and not p.comparable}
+    print("### Sources and their caveats\n", file=out)
+    for name, src in SOURCES.items():
+        if name in used:
+            print(f"- [{src.label}]({src.url}), {src.date}: {src.caveat}", file=out)
+    print(file=out)
     print("### Not comparable (published, but not scorable under the same protocol)\n", file=out)
     print("| System or benchmark | Source | Reported | Why not comparable |", file=out)
     print("| --- | --- | --- | --- |", file=out)

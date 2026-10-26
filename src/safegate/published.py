@@ -18,7 +18,8 @@ class Source:
     label: str  # paper or repository, version, table or page
     url: str
     date: str  # version date, commit date or card date
-    run_by: str
+    run_by: str  # short: authors, vendor, third party
+    caveat: str  # how the numbers were produced, printed once under the tables
 
     def cite(self) -> str:
         return f"[{self.label}]({self.url}), {self.run_by}, {self.date}"
@@ -40,58 +41,84 @@ SOURCES: dict[str, Source] = {
         "PromptShield arXiv 2501.15145 v2, Table 4, PDF p. 9",
         "https://arxiv.org/pdf/2501.15145v2",
         "12 Apr 2025",
-        "the PromptShield authors (thresholds set on the test rows)",
+        "authors",
+        "thresholds are set on the test rows themselves (the authors say they should have "
+        "used validation rows); a threshold counts when its FPR is within 25% of the target; "
+        "about 24,000 sampled points against the 23,516 rows of `test.json`",
     ),
     "horizon": Source(
         "Horizon-Labs/prompt-injection-guard-base card @ 70b65c51, eval tables",
         "https://huggingface.co/Horizon-Labs/prompt-injection-guard-base/blob/"
         "70b65c51c03f7d9b5d1f18726defee45f3936610/README.md",
         "22 Oct 2026",
-        "Horizon Labs (vendor; public script `code/train/evaluate.py`, threshold 0.5)",
+        "vendor",
+        "all numbers computed by Horizon Labs with their public script "
+        "`code/train/evaluate.py`, threshold 0.5, sliding window for long inputs; Horizon "
+        "sells a competing model and trains on the TRAIN splits of deepset and jackhhao",
     ),
     "sentinel": Source(
         "Qualifire Sentinel arXiv 2506.05446 v1, Table 2, PDF p. 4",
         "https://arxiv.org/pdf/2506.05446",
         "5 Jun 2025",
-        "Qualifire (vendor; split and threshold not stated)",
+        "vendor",
+        "the paper names no split and no threshold; Qualifire sells the model",
     ),
     "mozilla": Source(
         "mozilla-ai/any-guardrail `schemas/guardrail_benchmarks.json` @ 8346c6a",
         "https://raw.githubusercontent.com/mozilla-ai/any-guardrail/"
         "8346c6a2eaf26217a1125620f5b202cbe75a1641/schemas/guardrail_benchmarks.json",
         "3 Aug 2026",
-        "Mozilla.ai (private harness, `native-valid` threshold, model variant not recorded)",
+        "Mozilla.ai",
+        "private harness (the benchmark repository is not public), `native-valid` threshold "
+        "(the guard's own verdict), dataset revision `unspecified`, the model variant behind "
+        "each guard id is not recorded; row counts are inferred from the value granularity "
+        "(116 deepset rows, 112 Gandalf rows, 200 JBB rows)",
     ),
     "bastion": Source(
         "bastion-soft/pi-detector-bench `results/leaderboard.md` @ d744d88",
         "https://github.com/bastion-soft/pi-detector-bench/blob/"
         "d744d88aa4be70c598a67957e605a8c229c37982/results/leaderboard.md",
         "3 Jul 2026",
-        "Bastion Soft (maintains the benchmark and ships the top-ranked model)",
+        "benchmark maintainer",
+        "Bastion Soft maintains the benchmark and ships the top-ranked model; threshold 0.5 "
+        "for F1, AUC from raw probabilities with `max_length` 512; the committed score dumps "
+        "reproduce the table to three decimals; ProtectAI v2 was trained on the xTRam1 train "
+        "split, so its xTRam1 AUC is not held out",
     ),
     "wildguard": Source(
         "WildGuard arXiv 2406.18495 v3, Table 3, PDF p. 6",
         "https://arxiv.org/pdf/2406.18495",
         "9 Dec 2024",
-        "the WildGuard authors (AI2), baselines run by them",
+        "authors",
+        "baselines run by the WildGuard authors; no threshold stated, hard labels; ToxicChat "
+        "is the 2,853 human-annotated test prompts (2,491 benign, 362 harmful, 91 "
+        "adversarial) and HarmBench the 239 standard and copyright prompts, per Table 14",
     ),
     "guardreasoner": Source(
         "GuardReasoner arXiv 2501.18492 v2, Table 2, PDF p. 4",
         "https://arxiv.org/pdf/2501.18492",
         "17 Oct 2025",
-        "the GuardReasoner authors",
+        "authors",
+        "hard labels, no threshold; the WildGuard, Llama Guard, Aegis and OpenAI rows equal "
+        "WildGuard Table 3 (probably copied), the GPT-4, GPT-4o and Llama Guard 3 rows are "
+        "their own runs; the Llama Guard 3 row of v2 Table 2 is column-shifted, the ToxicChat "
+        "and HarmBench cells are not affected",
     ),
     "qwen3guard": Source(
         "Qwen3Guard arXiv 2510.14276 v1, Table 2, PDF p. 7",
         "https://arxiv.org/pdf/2510.14276",
         "16 Oct 2025",
-        "the Qwen team (sets said to follow WildGuard; sizes not stated)",
+        "authors",
+        "the paper says its English sets follow WildGuard but states no version, split or "
+        "size; Qwen3Guard reports strict and loose mode, both are listed, and the paper's Avg "
+        "column picks the better per benchmark",
     ),
     "granite_card": Source(
         "ibm-granite/granite-guardian-3.3-8b card @ b3421eda, Harm Benchmarks table",
         "https://huggingface.co/ibm-granite/granite-guardian-3.3-8b",
         "9 Sep 2025",
-        "IBM (self-reported)",
+        "IBM",
+        "self-reported; the card names no split, subset, version or counts",
     ),
 }
 
