@@ -4,7 +4,8 @@ Read on 26 Oct 2026. Every number below was read from the page named next to it,
 then (for the benchmark and system-defence numbers) again by a second one; the differences
 between the two readings are in "Corrections found by the second reading" at the end. Version
 and date are given for every paper because several changed between versions. Nothing was run
-except safegate: no guard model was downloaded or loaded.
+except safegate: no guard model was downloaded or loaded. (Section 5b, added 29 Oct 2026, is the
+one exception: it reports claude-sonnet-5-5 called through the Anthropic API; still nothing local.)
 
 Safegate is a model-free text gate: stage-1 regex families with base64 and ROT13 decoding, stage-2
 logistic regression over signed hashed word and character n-grams (numpy only), an optional input
@@ -15,7 +16,7 @@ prompted as a judge, or an architecture around an agent.
 
 Contents: [1 Detectors](#1-detectors) · [2 System-level defences](#2-system-level-defences) ·
 [3 Adaptive attacks](#3-adaptive-attacks) · [4 Benchmarks](#4-benchmarks) ·
-[5 Head to head](#5-head-to-head-on-identical-public-sets) · [6 What safegate is and is not](#6-what-safegate-is-and-is-not) ·
+[5 Head to head](#5-head-to-head-on-identical-public-sets) (and [5b a frontier model measured here](#5b-a-frontier-model-measured-here-as-a-guard-and-as-an-agent)) · [6 What safegate is and is not](#6-what-safegate-is-and-is-not) ·
 [7 Not comparable](#7-published-numbers-that-cannot-be-compared) ·
 [8 Corrections](#8-corrections-found-by-the-second-reading)
 
@@ -209,6 +210,24 @@ uv run safegate benchmark --suite all          # the three InjecGuard sets, then
 uv run safegate benchmark --suite public       # the nine further sets only
 uv run safegate benchmark --suite promptshield --stage2 v2
 ```
+
+### 5b. A frontier model measured here: as a guard and as an agent
+
+Added 29 Oct 2026. Protocol, predictions, calls and every deviation: [`docs/protocol-llm.md`](protocol-llm.md); tables and reading: the README sections "1b" and "With a real model as the agent". Every number carries **claude-sonnet-5-5 via Anthropic API, 2026-10-29, no logprobs**, is a single sample (the API rejects `temperature` for this model), and is replayed offline from the committed cache `data/llm_cache/`. 1,888 API calls in total.
+
+*As a zero-shot guard* (comparable rows: same files, same metric as the InjecGuard paper's Table 1 and Table 7; WildGuard benign is a 600-row seeded subsample of 971):
+
+| Set | claude-sonnet-5-5, zero-shot | GPT-4o (paper) | LlamaGuard3 (paper) | InjecGuard (paper) | Safegate v2, same rows |
+| --- | --- | --- | --- | --- | --- |
+| NotInject | 98.8% [97.0%, 99.5%] | 86.73% | 99.71% | 87.32% | 94.4% |
+| WildGuard benign | 90.5% [87.9%, 92.6%] | 84.24% | 95.16% | 76.11% | 92.8% |
+| BIPIA | 17.0% | 66.00% | 39.67% | 68.34% | 8.3% |
+| Mean | 68.8% | 79.0% | 78.2% | 77.3% | 65.2% |
+
+A frontier model prompted as a judge over-defends less than every published guard on NotInject except LlamaGuard3, and loses on BIPIA, the indirect-injection set, where 63 of 125 attacks are labelled benign and 40 more (the code subset) are API refusals counted wrong. BIPIA is also the lowest of the three scores for every guard in the paper that scores above 80% on NotInject (Lakera 12.00%, LlamaGuard3 39.67%, GPT-4o 66.00%, InjecGuard 68.34%): attacks written as task-like instructions inside a document are the hard case for detectors, fine-tuned or prompted. It costs about $1.05 per 1,000 requests at $2 / $10 per million tokens (336 input and 37 output tokens per request); safegate costs nothing per request. Behind safegate as a stage 2 the model removes the gate's false positives for $0.11 per 1,000 requests and does not add detection.
+
+*As the agent in the scenario suite* (not comparable with any published number: 18 invented tasks, 150 cases of the author's own, one model): 0/150 injected goals executed and 0/150 even attempted, with and without the layer, and also with a system prompt that tells the model to obey tool results. That is the same direction as the lab numbers in section 2 (Gray Swan arena ASR 0.5% to 8.5% across 13 models, Claude Opus 5 2.0% at k=15), but those are different attacks, attempts and denominators, so no rate here is set against them. What it supports is narrow: the 15 blunt payloads of this suite do not move this model, so the oracle's 100% undefended success was a property of the oracle, and the tool-call layer's measured effect on this model is only its cost (benign utility 16, 14 and 12 of 18 for no layer, argument policies and plus the Rule of Two).
+
 
 ## 6. What safegate is and is not
 

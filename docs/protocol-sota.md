@@ -139,3 +139,10 @@ prints. Nothing below changed a score or a threshold.
    defined prints `n/a` instead of `nan`; the ACL 2025 camera-ready NotInject baselines of four
    guards are printed next to the arXiv v3 ones. The ranking score, the configurations, the
    comparability rule and the decision rules are unchanged.
+
+## Update, 2026-10-29: one model run through an API
+
+The rule above, that nothing is run but safegate, still holds for the twelve sets of this protocol.
+`docs/protocol-llm.md` adds one row to the InjecGuard-set table: claude-sonnet-5-5 as a zero-shot
+guard through the Anthropic API, with its own protocol, dev set (50 items of the bundled training
+data) and a 600-row subsample of WildGuard benign. No published number was changed.

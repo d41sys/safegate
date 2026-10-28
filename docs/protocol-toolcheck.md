@@ -131,3 +131,13 @@ Scored once on 2026-10-28 with `uv run safegate tool-eval`. Every cell of the pr
 approval run and the per-injection counts matched; there was no deviation and no fix. The tables
 and the list of what the layer cannot stop are in the README section "Tool-call layer"; the numbers
 are pinned in `tests/test_toolsuite_results.py`.
+
+## Update, 2026-10-29: a real model as the agent
+
+The statement above that "no model is involved" holds for this protocol and its scored numbers,
+which are unchanged. A second protocol, [`protocol-llm.md`](protocol-llm.md), runs the same 18 user
+tasks, 15 injection tasks, policy, layer and checkers with claude-sonnet-5-5 as the agent
+(`safegate tool-eval --agent anthropic:claude-sonnet-5-5`). Result: the model executed 0 of 150
+injected goals and attempted none, with and without the layer, so the oracle's undefended 100%
+was a property of the oracle and the layer's measured effect on that model is its cost only
+(README, "With a real model as the agent").
