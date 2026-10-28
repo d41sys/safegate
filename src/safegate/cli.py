@@ -85,6 +85,7 @@ from safegate.stage2_eval import (
     scenarios,
 )
 from safegate.taxonomy import Sample
+from safegate.toolpolicy import Session, ToolCall, check_tool_call, load_tool_policy
 from safegate.windows import WindowConfig
 
 
@@ -737,6 +738,59 @@ def cmd_spec_check(args: argparse.Namespace) -> int:
     return 1 if decision.action in BLOCKING_ACTIONS else 0
 
 
+def _load_tool_call(path: str) -> tuple[ToolCall, dict[str, list[str]], Session | None]:
+    """Parse a ``tool-check`` input: ``tool``, ``args``, ``labels`` and an optional ``session``."""
+    data = _load_json_object(path)
+    unknown = set(data) - {"tool", "args", "labels", "session"}
+    if unknown:
+        raise ValueError(f"{path}: unknown keys {sorted(unknown)}")
+    call = ToolCall.from_dict(data)
+    labels = data.get("labels", {})
+    if not isinstance(labels, dict) or not all(
+        isinstance(v, list) and all(isinstance(x, str) for x in v) for v in labels.values()
+    ):
+        raise ValueError(f"{path}: labels must map argument names to lists of label strings")
+    session = None
+    if "session" in data:
+        raw = data["session"]
+        if not isinstance(raw, dict) or set(raw) - {"labels", "consequential"}:
+            raise ValueError(f"{path}: session takes only labels and consequential")
+        consequential = raw.get("consequential", False)
+        session_labels = raw.get("labels", [])
+        if not isinstance(consequential, bool) or not isinstance(session_labels, list):
+            raise ValueError(f"{path}: session.labels is a list, session.consequential a bool")
+        session = Session()
+        session.observe(session_labels)
+        session.consequential = consequential
+    return call, labels, session
+
+
+def cmd_tool_check(args: argparse.Namespace) -> int:
+    """Check one proposed tool call, with provenance labels, against a tool policy.
+
+    Exit code: 0 for allow/warn, 1 for a blocking action, 2 for unreadable input.
+    """
+    try:
+        policy = load_tool_policy(Path(args.policy))
+        call, labels, session = _load_tool_call(args.call)
+        decision = check_tool_call(call, labels, policy, session)
+    except (OSError, ValueError) as exc:  # JSONDecodeError, ToolPolicyError, LabelError
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(decision.to_dict(), indent=2))
+    else:
+        two = decision.metadata.get("rule_of_two")
+        print(f"action:   {decision.action}")
+        print(f"tool:     {call.tool} ({decision.metadata['capability']})")
+        print(f"rules:    {', '.join(decision.rule_ids) or 'none'}")
+        print(f"session:  {'not checked' if two is None else json.dumps(two)}")
+        for reason in decision.reasons:
+            print(f"  - {reason}")
+    return 1 if decision.action in BLOCKING_ACTIONS else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser."""
     parser = argparse.ArgumentParser(
@@ -939,6 +993,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_spec.add_argument("--previous", help="last trusted spec JSON, enables the delta bounds")
     p_spec.add_argument("--json", action="store_true", help="print the Decision as JSON")
     p_spec.set_defaults(func=cmd_spec_check)
+
+    p_tool = sub.add_parser(
+        "tool-check",
+        help="Check a tool call with provenance labels (JSON) against a tool policy (YAML)",
+    )
+    p_tool.add_argument("call", help="call JSON: tool, args, labels, optional session")
+    p_tool.add_argument("--policy", required=True, help="tool policy YAML file")
+    p_tool.add_argument("--json", action="store_true", help="print the Decision as JSON")
+    p_tool.set_defaults(func=cmd_tool_check)
 
     return parser
 

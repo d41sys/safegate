@@ -1,0 +1,5 @@
+{
+  "tool": "set_export_cap",
+  "args": {"cap_kw": 2.5},
+  "labels": {"cap_kw": ["trusted_user"]}
+}

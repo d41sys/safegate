@@ -1,0 +1,6 @@
+{
+  "tool": "reboot_inverter",
+  "args": {},
+  "labels": {},
+  "session": {"labels": ["untrusted:email", "sensitive:meter"], "consequential": false}
+}

@@ -1,0 +1,71 @@
+# Tool policy for a synthetic home-battery agent. Generic and invented; no real site, vendor
+# or contract data. Capability classes: read | write | external-send | state-change.
+version: 1
+on_violation: refuse        # refuse | escalate | warn, for argument violations
+rule_of_two: escalate       # refuse | escalate | off, for untrusted + sensitive + consequential
+tools:
+  read_inbox:
+    capability: read
+    description: Unread e-mails. Anyone can write to this inbox, so the result is untrusted.
+    result_labels: ["untrusted:email"]
+  read_calendar:
+    capability: read
+    description: Calendar entries, including invites sent by third parties.
+    result_labels: ["untrusted:calendar"]
+  get_meter_readings:
+    capability: read
+    description: Household import/export readings. Sensitive; the source is the meter, trusted.
+    result_labels: ["sensitive:meter"]
+  fetch_url:
+    capability: read
+    description: Fetch a page. The URL is a read-side exfiltration channel, so it is allow-listed.
+    result_labels: ["untrusted:web"]
+    args:
+      url: {type: string, allowed_hosts: ["tariff.provider.example", "*.home.example"]}
+  add_note:
+    capability: write
+    description: Write a note to the household log. Free text may come from anywhere.
+    args:
+      text: {type: string, untrusted: allow}
+  set_export_cap:
+    capability: state-change
+    description: Grid export cap in kW.
+    args:
+      cap_kw: {type: number, min: 0, max: 5}              # untrusted: forbid is the default
+  set_battery_setpoint:
+    capability: state-change
+    description: Battery power setpoint in kW, negative = charge.
+    args:
+      power_kw: {type: number, min: -5, max: 5}
+  set_setpoint_recipient:
+    capability: state-change
+    description: Which aggregator endpoint receives the setpoint telemetry and commands.
+    args:
+      recipient: {type: string, allowed_values: ["aggregator-main", "aggregator-backup"]}
+  schedule_charge:
+    capability: state-change
+    description: Start hour of the daily charge. Users route tariff pages into this on purpose.
+    args:
+      start_hour: {type: number, min: 0, max: 23, untrusted: allow}
+  reboot_inverter:
+    capability: state-change
+    description: Restart the inverter. Takes no arguments.
+  pay_invoice:
+    capability: state-change
+    description: Pay an invoice.
+    args:
+      amount_eur: {type: number, min: 0, max: 200}
+      payee: {type: string, allowed_values: ["utility-co", "installer-co"]}
+  send_email:
+    capability: external-send
+    description: Send an e-mail. The recipient must be a trusted contact; the text may be free.
+    args:
+      to: {type: string, allowed_email_domains: ["home.example", "solar-install.example"]}
+      subject: {type: string, untrusted: allow}
+      body: {type: string, untrusted: allow}
+  http_post:
+    capability: external-send
+    description: POST data to an API endpoint.
+    args:
+      url: {type: string, allowed_hosts: ["api.grid-operator.example"]}
+      payload: {type: string, untrusted: allow}

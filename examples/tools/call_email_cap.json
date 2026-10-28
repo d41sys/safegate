@@ -1,0 +1,5 @@
+{
+  "tool": "set_export_cap",
+  "args": {"cap_kw": 0},
+  "labels": {"cap_kw": ["untrusted:email"]}
+}

@@ -1,0 +1,5 @@
+{
+  "tool": "set_setpoint_recipient",
+  "args": {"recipient": "aggregator-evil"},
+  "labels": {"recipient": ["untrusted:email"]}
+}
