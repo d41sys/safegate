@@ -7,6 +7,7 @@ import json
 import sys
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import asdict
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,7 @@ from safegate.stage2_eval import (
 )
 from safegate.taxonomy import Sample
 from safegate.toolpolicy import Session, ToolCall, check_tool_call, load_tool_policy
+from safegate.toolsuite import CONDITION_HELP, format_report, run_suite
 from safegate.windows import WindowConfig
 
 
@@ -791,6 +793,27 @@ def cmd_tool_check(args: argparse.Namespace) -> int:
     return 1 if decision.action in BLOCKING_ACTIONS else 0
 
 
+def cmd_tool_eval(args: argparse.Namespace) -> int:
+    """Run the synthetic tool-call scenario suite (``docs/protocol-toolcheck.md``)."""
+    try:
+        policy = load_tool_policy(Path(args.policy)) if args.policy else None
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    result = run_suite(policy)
+    if args.cases:
+        for cond, runs in result.attacks.items():
+            for r in runs:
+                print(json.dumps({"condition": cond, **asdict(r)}))
+        return 0
+    print("# Tool-call layer: synthetic scenario suite\n")
+    for name, text in CONDITION_HELP.items():
+        print(f"- `{name}`: {text}")
+    print()
+    print(format_report(result))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser."""
     parser = argparse.ArgumentParser(
@@ -1002,6 +1025,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_tool.add_argument("--policy", required=True, help="tool policy YAML file")
     p_tool.add_argument("--json", action="store_true", help="print the Decision as JSON")
     p_tool.set_defaults(func=cmd_tool_check)
+
+    p_teval = sub.add_parser(
+        "tool-eval",
+        help="Run the synthetic home-battery scenario suite for the tool-call layer",
+    )
+    p_teval.add_argument("--policy", help="tool policy YAML (default: examples/tools/energy.yaml)")
+    p_teval.add_argument(
+        "--cases", action="store_true", help="print every attack run as JSON lines"
+    )
+    p_teval.set_defaults(func=cmd_tool_eval)
 
     return parser
 

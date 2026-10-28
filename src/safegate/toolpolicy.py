@@ -339,15 +339,21 @@ class Session:
         """Add labels of data that entered the agent's context."""
         self.labels.update(parse_labels(labels))
 
+    def record(
+        self, call: ToolCall, labels: Mapping[str, Iterable[str]], policy: ToolPolicy
+    ) -> None:
+        """Record a call that was executed (for example after a human approved an escalation)."""
+        spec = policy.tools[call.tool]
+        self.labels.update(_call_labels(call, labels), spec.result_labels)
+        self.consequential = self.consequential or spec.consequential
+
     def admit(
         self, call: ToolCall, labels: Mapping[str, Iterable[str]], policy: ToolPolicy
     ) -> Decision:
         """Check ``call``; when it is allowed (or only warned), record it in the session."""
         decision = check_tool_call(call, labels, policy, self)
         if decision.action in ("allow", "warn"):
-            spec = policy.tools[call.tool]
-            self.labels.update(_call_labels(call, labels), spec.result_labels)
-            self.consequential = self.consequential or spec.consequential
+            self.record(call, labels, policy)
         return decision
 
 
