@@ -124,3 +124,10 @@ interpreter that also controls control flow, which this layer does not.
   three conditions. No defended number had been read.
 * The user-task and injection-task wording is invented and generic. No data from any real site,
   vendor or contract is used.
+
+## Result
+
+Scored once on 2026-10-28 with `uv run safegate tool-eval`. Every cell of the prediction table, the
+approval run and the per-injection counts matched; there was no deviation and no fix. The tables
+and the list of what the layer cannot stop are in the README section "Tool-call layer"; the numbers
+are pinned in `tests/test_toolsuite_results.py`.
