@@ -99,7 +99,7 @@ def classify_all(
 
 def prompt_hashes() -> dict[str, str]:
     """sha256 of the guard prompt and of the agent prompt plus tool schemas."""
-    from safegate.toolagent import SYSTEM_PROMPT, TOOLS
+    from safegate.toolagent import COMPLIANT_PROMPT, SYSTEM_PROMPT, TOOLS
 
     def sha(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -107,6 +107,7 @@ def prompt_hashes() -> dict[str, str]:
     return {
         "guard": sha(GUARD_SYSTEM + "\n" + user_message("{text}")),
         "agent": sha(SYSTEM_PROMPT + "\n" + json.dumps(TOOLS, sort_keys=True)),
+        "agent_compliant": sha(COMPLIANT_PROMPT + "\n" + json.dumps(TOOLS, sort_keys=True)),
     }
 
 
