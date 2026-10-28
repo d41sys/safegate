@@ -62,6 +62,20 @@ from safegate.external import (
 )
 from safegate.gate import BLOCKING_ACTIONS, SafetyGate
 from safegate.injection import DEFAULT_STAGE2, STAGE2_MODES, InjectionDetector
+from safegate.llm import (
+    DEFAULT_CACHE_DIR,
+    AnthropicClient,
+    LLMError,
+    parse_agent_spec,
+    totals,
+)
+from safegate.llmguard import (
+    dev_set,
+    format_guard_report,
+    load_guard_data,
+    run_guard,
+    score_dev,
+)
 from safegate.lodo import (
     LODO_KEYS,
     MAX_TRAIN_PER_CLASS,
@@ -86,7 +100,14 @@ from safegate.stage2_eval import (
     scenarios,
 )
 from safegate.taxonomy import Sample
-from safegate.toolpolicy import Session, ToolCall, check_tool_call, load_tool_policy
+from safegate.toolagent import LLM_CONDITIONS, format_llm_report, run_dev, run_llm_suite
+from safegate.toolpolicy import (
+    Session,
+    ToolCall,
+    ToolPolicy,
+    check_tool_call,
+    load_tool_policy,
+)
 from safegate.toolsuite import CONDITION_HELP, format_report, run_suite
 from safegate.windows import WindowConfig
 
@@ -694,8 +715,28 @@ def cmd_adaptive_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _benchmark_guard(args: argparse.Namespace) -> int:
+    """``benchmark --suite injecguard --guard anthropic:<model>`` (``docs/protocol-llm.md``)."""
+    if args.suite != "injecguard":
+        print("error: --guard needs --suite injecguard", file=sys.stderr)
+        return 2
+    try:
+        model = parse_agent_spec(args.guard)
+        client = _llm_client(args, model, "guard.jsonl")
+        data = load_guard_data(args.cache_dir)
+        run = run_guard(client, data)
+    except (OSError, ValueError, LLMError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"# {model} as a zero-shot injection guard\n")
+    print(format_guard_report(run, data, client.tag(), _usage_line(client), model))
+    return 0
+
+
 def cmd_benchmark(args: argparse.Namespace) -> int:
     """Score the gate on public sets next to published guards (``docs/protocol-sota.md``)."""
+    if args.guard:
+        return _benchmark_guard(args)
     stages = tuple(STAGE2_MODES) if args.stage2 == "both" else (args.stage2,)
     suites, public = resolve_suites(args.suite)
     if suites:
@@ -705,6 +746,23 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     if public:
         data, scores = run_sota(stages, public, args.cache_dir, args.refresh)
         print_sota(data, scores, public)
+    return 0
+
+
+def cmd_guard_dev(args: argparse.Namespace) -> int:
+    """Score the zero-shot LLM guard prompt on the 50-item dev set (bundled training data)."""
+    try:
+        model = parse_agent_spec(args.guard)
+        client = _llm_client(args, model, "guard-dev.jsonl")
+        recall, benign, bad = score_dev(client)
+    except (OSError, ValueError, LLMError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"dev set: {len(dev_set())} items of injection_train.jsonl (25 attacks, 25 benign)")
+    print(f"attack recall:   {recall.fmt()}")
+    print(f"benign accuracy: {benign.fmt()}")
+    print(f"unparseable:     {bad}")
+    print(_usage_line(client))
     return 0
 
 
@@ -793,6 +851,48 @@ def cmd_tool_check(args: argparse.Namespace) -> int:
     return 1 if decision.action in BLOCKING_ACTIONS else 0
 
 
+def _llm_client(args: argparse.Namespace, model: str, default_cache: str) -> AnthropicClient:
+    """The cached client selected by ``--llm-cache`` and ``--llm-offline``."""
+    path = Path(args.llm_cache or Path(DEFAULT_CACHE_DIR) / default_cache)
+    return AnthropicClient(path, model=model, offline=args.llm_offline)
+
+
+def _usage_line(client: AnthropicClient) -> str:
+    calls, inp, out = totals([client])
+    served = ", ".join(sorted(client.served_models())) or "none"
+    return (
+        f"Cache `{client.cache_path}`: {calls} API calls, {inp} input and {out} output tokens in "
+        f"total; model id returned by the API: {served}. This invocation: {client.stats.line()}."
+    )
+
+
+def _tool_eval_llm(args: argparse.Namespace, policy: ToolPolicy | None) -> int:
+    """``tool-eval --agent anthropic:<model>``: the model as the agent (``protocol-llm.md``)."""
+    try:
+        model = parse_agent_spec(args.agent)
+        client = _llm_client(args, model, "tool-eval-dev.jsonl" if args.dev else "tool-eval.jsonl")
+        if args.dev:
+            for run in run_dev(client, policy):
+                print(json.dumps(run.to_json()))
+            print(_usage_line(client), file=sys.stderr)
+            return 0
+        result = run_llm_suite(client, policy)
+    except (OSError, ValueError, LLMError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.cases:
+        for runs in result.attacks.values():
+            for r in runs:
+                print(json.dumps(r.to_json()))
+        return 0
+    print(f"# Tool-call layer: {model} as the agent\n")
+    for name in LLM_CONDITIONS:
+        print(f"- `{name}`: {CONDITION_HELP[name]}")
+    print()
+    print(format_llm_report(result, client.tag(), _usage_line(client)))
+    return 0
+
+
 def cmd_tool_eval(args: argparse.Namespace) -> int:
     """Run the synthetic tool-call scenario suite (``docs/protocol-toolcheck.md``)."""
     try:
@@ -800,6 +900,8 @@ def cmd_tool_eval(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    if args.agent:
+        return _tool_eval_llm(args, policy)
     result = run_suite(policy)
     if args.cases:
         for cond, runs in result.attacks.items():
@@ -995,7 +1097,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_bench.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
     p_bench.add_argument("--refresh", action="store_true", help="re-download even if cached")
+    p_bench.add_argument(
+        "--guard",
+        help="score a model as a zero-shot guard instead of safegate, e.g. "
+        "anthropic:claude-sonnet-5-5 (with --suite injecguard; needs ANTHROPIC_API_KEY unless "
+        "--llm-offline)",
+    )
+    p_bench.add_argument("--llm-cache", help="response cache file (default data/llm_cache/...)")
+    p_bench.add_argument(
+        "--llm-offline", action="store_true", help="read the cache only: no key, no network"
+    )
     p_bench.set_defaults(func=cmd_benchmark)
+
+    p_gdev = sub.add_parser(
+        "guard-dev",
+        help="Zero-shot LLM guard prompt on the 50-item dev set (bundled training data only)",
+    )
+    p_gdev.add_argument("--guard", default="anthropic:claude-sonnet-5-5", help="anthropic:<model>")
+    p_gdev.add_argument("--llm-cache", help="response cache file (default data/llm_cache/...)")
+    p_gdev.add_argument(
+        "--llm-offline", action="store_true", help="read the cache only: no key, no network"
+    )
+    p_gdev.set_defaults(func=cmd_guard_dev)
 
     p_win = sub.add_parser(
         "window-eval",
@@ -1033,6 +1156,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_teval.add_argument("--policy", help="tool policy YAML (default: examples/tools/energy.yaml)")
     p_teval.add_argument(
         "--cases", action="store_true", help="print every attack run as JSON lines"
+    )
+    p_teval.add_argument(
+        "--agent",
+        help="a real model as the agent instead of the scripted oracle, e.g. "
+        "anthropic:claude-sonnet-5-5 (needs ANTHROPIC_API_KEY unless --llm-offline)",
+    )
+    p_teval.add_argument("--llm-cache", help="response cache file (default data/llm_cache/...)")
+    p_teval.add_argument(
+        "--llm-offline", action="store_true", help="read the cache only: no key, no network"
+    )
+    p_teval.add_argument(
+        "--dev", action="store_true", help="with --agent: the three dev cases (plumbing check)"
     )
     p_teval.set_defaults(func=cmd_tool_eval)
 
