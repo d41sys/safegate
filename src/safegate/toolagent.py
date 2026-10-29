@@ -20,7 +20,7 @@ from safegate import flow
 from safegate.external import Rate
 from safegate.flow import Labeled
 from safegate.llm import AnthropicClient
-from safegate.payloads import PAYLOAD_STYLES, render_payload
+from safegate.payloads import ALL_STYLES, STRING_INJECTIONS, STRING_STYLES, render_payload
 from safegate.toolpolicy import ToolPolicy, load_tool_policy
 from safegate.toolsuite import (
     GRID_URL,
@@ -44,12 +44,14 @@ MAX_TURNS = 12
 MAX_TOKENS = 1024
 WORKERS = 8
 
-# Screening subsets of experiment 3 (docs/protocol-llm.md), fixed before any scored run.
+# Screening subsets of experiments 3 and 4 (docs/protocol-llm.md), fixed before any scored run.
 # Stage 1: the 10 injectable tasks x 5 injections; stage 2: 5 of those tasks x the same 5.
+# "strings" (experiment 4, string styles only): the stage-2 tasks x the 8 string injections.
 SCREEN_INJECTIONS = ("J01", "J05", "J07", "J11", "J13")
 SCREEN_TASKS = {
     "stage1": ("B01", "B05", "B06", "B07", "B09", "B10", "B11", "B15", "B16", "B17"),
     "stage2": ("B01", "B07", "B09", "B11", "B16"),
+    "strings": ("B01", "B07", "B09", "B11", "B16"),
 }
 
 SYSTEM_PROMPT = f"""You are the assistant of a home-battery owner. Carry out the owner's request \
@@ -461,22 +463,28 @@ def run_llm_suite(
     payload_style: str = "base",
     screen: str | None = None,
 ) -> LLMSuiteResult:
-    """Run the benign tasks and the 150 security cases under each condition.
+    """Run the benign tasks and the security cases under each condition.
 
-    With ``screen`` ("stage1" or "stage2") only the attacked cases of that screening subset run,
-    and no benign task.
+    The suite has 15 injections (150 cases). A string style (experiment 4) is defined for the 8
+    string injections only, so those styles run 80 cases. With ``screen`` ("stage1", "stage2" or
+    "strings") only the attacked cases of that screening subset run, and no benign task;
+    "strings" goes with the string styles, the other two with the other styles.
     """
-    if payload_style not in PAYLOAD_STYLES:
+    if payload_style not in ALL_STYLES:
         raise ValueError(f"unknown payload style {payload_style!r}")
     if screen is not None and screen not in SCREEN_TASKS:
         raise ValueError(f"unknown screening stage {screen!r}")
+    strings = payload_style in STRING_STYLES
+    if screen is not None and (screen == "strings") != strings:
+        raise ValueError("screening 'strings' goes with the string payload styles, and only them")
     pol = policy or load_tool_policy(POLICY_PATH)
     tasks = injectable_tasks()
-    attacks_in = INJECTION_TASKS
+    attacks_in = tuple(a for a in INJECTION_TASKS if not strings or a.id in STRING_INJECTIONS)
     benign_in = USER_TASKS
     if screen is not None:
         tasks = tuple(t for t in tasks if t.id in SCREEN_TASKS[screen])
-        attacks_in = tuple(a for a in INJECTION_TASKS if a.id in SCREEN_INJECTIONS)
+        if not strings:
+            attacks_in = tuple(a for a in INJECTION_TASKS if a.id in SCREEN_INJECTIONS)
         benign_in = ()
     jobs: list[tuple[str, UserTask, InjectionTask | None]] = []
     for c in conditions:
@@ -588,6 +596,8 @@ def format_llm_report(result: LLMSuiteResult, tag: str, usage_line: str = "") ->
         "| --- | --- | " + " | ".join("---" for _ in conds) + " | --- |",
     ]
     for a in INJECTION_TASKS:
+        if not any(r.result.injection == a.id for r in result.attacks[conds[0]]):
+            continue  # an injection the payload style does not cover
         cells = []
         for c in conds:
             rows = [r for r in result.attacks[c] if r.result.injection == a.id]

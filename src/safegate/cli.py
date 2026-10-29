@@ -86,7 +86,7 @@ from safegate.lodo import (
     shipped_split,
 )
 from safegate.mock_llm import MockStreamingLLM
-from safegate.payloads import PAYLOAD_STYLES
+from safegate.payloads import ALL_STYLES, STRING_STYLES
 from safegate.perturb import homoglyph_unlisted, homoglyph_unseen, rng_for
 from safegate.refusal import RefusalEvaluator
 from safegate.sota import SOTA_KEYS, print_sota, resolve_suites, run_sota
@@ -887,7 +887,10 @@ def _tool_eval_llm(args: argparse.Namespace, policy: ToolPolicy | None) -> int:
         cache_name = "tool-eval-dev.jsonl" if args.dev else "tool-eval.jsonl"
         if stress and not args.dev:
             cache_name = f"tool-eval-{args.agent_prompt}.jsonl"
-        if model != MODEL or args.payload_style != "base" or args.screen:
+        if args.payload_style in STRING_STYLES:
+            # experiment 4 (string styles): its own cache directory, so its call ledger is its own
+            cache_name = f"strings/{model}-dev.jsonl" if args.dev else f"strings/{model}.jsonl"
+        elif model != MODEL or args.payload_style != "base" or args.screen:
             # experiment 3 (other models, payload styles, screening): one cache file per model
             cache_name = f"weak/{model}-dev.jsonl" if args.dev else f"weak/{model}.jsonl"
         client = _llm_client(args, model, cache_name)
@@ -1204,10 +1207,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_teval.add_argument(
         "--payload-style",
-        choices=PAYLOAD_STYLES,
+        choices=ALL_STYLES,
         default="base",
-        help="how the injected goals are written (experiment 3): base (the suite's own text), "
-        "system, notice, deferred, agentdojo; goals and checkers are unchanged",
+        help="how the injected goals are written: base (the suite's own text), system, notice, "
+        "deferred, agentdojo (experiment 3); operator, billing, installer (experiment 4, the 8 "
+        "string injections only); goals and checkers are unchanged",
     )
     p_teval.add_argument(
         "--screen",
