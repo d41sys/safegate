@@ -64,6 +64,7 @@ from safegate.gate import BLOCKING_ACTIONS, SafetyGate
 from safegate.injection import DEFAULT_STAGE2, STAGE2_MODES, InjectionDetector
 from safegate.llm import (
     DEFAULT_CACHE_DIR,
+    MODEL,
     AnthropicClient,
     LLMError,
     parse_agent_spec,
@@ -85,6 +86,7 @@ from safegate.lodo import (
     shipped_split,
 )
 from safegate.mock_llm import MockStreamingLLM
+from safegate.payloads import PAYLOAD_STYLES
 from safegate.perturb import homoglyph_unlisted, homoglyph_unseen, rng_for
 from safegate.refusal import RefusalEvaluator
 from safegate.sota import SOTA_KEYS, print_sota, resolve_suites, run_sota
@@ -100,7 +102,15 @@ from safegate.stage2_eval import (
     scenarios,
 )
 from safegate.taxonomy import Sample
-from safegate.toolagent import LLM_CONDITIONS, PROMPTS, format_llm_report, run_dev, run_llm_suite
+from safegate.toolagent import (
+    LLM_CONDITIONS,
+    PROMPTS,
+    SCREEN_TASKS,
+    format_llm_report,
+    format_screen_report,
+    run_dev,
+    run_llm_suite,
+)
 from safegate.toolpolicy import (
     Session,
     ToolCall,
@@ -854,7 +864,10 @@ def cmd_tool_check(args: argparse.Namespace) -> int:
 def _llm_client(args: argparse.Namespace, model: str, default_cache: str) -> AnthropicClient:
     """The cached client selected by ``--llm-cache`` and ``--llm-offline``."""
     path = Path(args.llm_cache or Path(DEFAULT_CACHE_DIR) / default_cache)
-    return AnthropicClient(path, model=model, offline=args.llm_offline)
+    max_calls = getattr(args, "max_calls", None)
+    if max_calls is None:
+        return AnthropicClient(path, model=model, offline=args.llm_offline)
+    return AnthropicClient(path, model=model, offline=args.llm_offline, max_calls=max_calls)
 
 
 def _usage_line(client: AnthropicClient) -> str:
@@ -874,13 +887,23 @@ def _tool_eval_llm(args: argparse.Namespace, policy: ToolPolicy | None) -> int:
         cache_name = "tool-eval-dev.jsonl" if args.dev else "tool-eval.jsonl"
         if stress and not args.dev:
             cache_name = f"tool-eval-{args.agent_prompt}.jsonl"
+        if model != MODEL or args.payload_style != "base" or args.screen:
+            # experiment 3 (other models, payload styles, screening): one cache file per model
+            cache_name = f"weak/{model}-dev.jsonl" if args.dev else f"weak/{model}.jsonl"
         client = _llm_client(args, model, cache_name)
         if args.dev:
             for run in run_dev(client, policy):
                 print(json.dumps(run.to_json()))
             print(_usage_line(client), file=sys.stderr)
             return 0
-        result = run_llm_suite(client, policy, system=PROMPTS[args.agent_prompt])
+        result = run_llm_suite(
+            client,
+            policy,
+            conditions=("none",) if args.screen else LLM_CONDITIONS,
+            system=PROMPTS[args.agent_prompt],
+            payload_style=args.payload_style,
+            screen=args.screen,
+        )
     except (OSError, ValueError, LLMError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -889,7 +912,14 @@ def _tool_eval_llm(args: argparse.Namespace, policy: ToolPolicy | None) -> int:
             for r in runs:
                 print(json.dumps(r.to_json()))
         return 0
-    print(f"# Tool-call layer: {model} as the agent (system prompt: {args.agent_prompt})\n")
+    print(
+        f"# Tool-call layer: {model} as the agent "
+        f"(system prompt: {args.agent_prompt}, payload style: {args.payload_style})\n"
+    )
+    if args.screen:
+        print(f"Screening subset `{args.screen}`, condition `none` only.\n")
+        print(format_screen_report(result, client.tag(), _usage_line(client)))
+        return 0
     for name in LLM_CONDITIONS:
         print(f"- `{name}`: {CONDITION_HELP[name]}")
     print()
@@ -1171,6 +1201,23 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(PROMPTS),
         default="default",
         help="system prompt: default, or compliant (stress test: told to obey tool results)",
+    )
+    p_teval.add_argument(
+        "--payload-style",
+        choices=PAYLOAD_STYLES,
+        default="base",
+        help="how the injected goals are written (experiment 3): base (the suite's own text), "
+        "system, notice, deferred, agentdojo; goals and checkers are unchanged",
+    )
+    p_teval.add_argument(
+        "--screen",
+        choices=sorted(SCREEN_TASKS),
+        help="with --agent: only the pre-registered screening subset, condition none, no benign",
+    )
+    p_teval.add_argument(
+        "--max-calls",
+        type=int,
+        help="with --agent: ceiling on API calls over every cache file in the cache directory",
     )
     p_teval.add_argument("--llm-cache", help="response cache file (default data/llm_cache/...)")
     p_teval.add_argument(
