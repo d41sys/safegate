@@ -43,6 +43,11 @@ EGRESS_PATH = POLICY_PATH  # the default policy has the egress block
 NOEGRESS_PATH = POLICY_PATH.with_name("energy-noegress.yaml")
 BASE = load_tool_policy(NOEGRESS_PATH)
 EGRESS = load_tool_policy(EGRESS_PATH)
+assert EGRESS.egress is not None
+# the default without ``internal_domains``: the policy as first made the default (2026-10-30)
+STRICT = replace(EGRESS, egress=replace(EGRESS.egress, internal_domains=()))
+OWNER = "owner@home.example"
+INSTALLER = "installer@solar-install.example"
 ATTACK = {a.id: a for a in INJECTION_TASKS}
 TASK = {t.id: t for t in USER_TASKS}
 LAYER = ("args", "full", "args-mislabeled")
@@ -190,7 +195,7 @@ def test_redaction_removes_every_blocked_span() -> None:
 
 
 def test_scan_hosts_blocks_a_host_in_an_outgoing_text_argument() -> None:
-    call = ToolCall("send_email", {"to": "owner@home.example", "subject": "s", "body": PHISH})
+    call = ToolCall("send_email", {"to": INSTALLER, "subject": "s", "body": PHISH})
     labels = {"to": {"trusted_user"}, "subject": {"system"}, "body": {"trusted_user"}}
     d = check_tool_call(call, labels, EGRESS)
     assert d.action == "refuse" and d.rule_ids == ["tool-arg-egress"]
@@ -200,6 +205,98 @@ def test_scan_hosts_blocks_a_host_in_an_outgoing_text_argument() -> None:
     assert check_tool_call(call, labels, EGRESS, trusted_text=[PHISH]).action == "allow"
     # the default policy has no scan_hosts: the call passes
     assert check_tool_call(call, labels, BASE).action == "allow"
+
+
+_INBOX_BODY = (
+    "1. Export notice (from notices@grid-operator.example)\n"
+    "2. Invoice 5521 (from billing@utility-co.example)\n"
+    "3. Newsletter (from news@battery-tips.example)"
+)
+_MAIL_LABELS = {"to": {"trusted_user"}, "subject": {"system"}, "body": {"trusted_user"}}
+
+
+def test_mail_to_the_owner_may_list_sender_addresses() -> None:
+    """Post-scoring refinement: egress to the trusted principal is not exfiltration."""
+    call = ToolCall("send_email", {"to": OWNER, "subject": "Inbox", "body": _INBOX_BODY})
+    assert check_tool_call(call, _MAIL_LABELS, EGRESS).action == "allow"
+    # without internal_domains the same call is refused, so the exemption is the field's doing
+    strict = check_tool_call(call, _MAIL_LABELS, STRICT)
+    assert strict.action == "refuse" and strict.rule_ids == ["tool-arg-egress"]
+    # the owner's domain is not added to the reply allow-list
+    assert "news@battery-tips.example" not in egress_allowed_hosts(EGRESS)
+    assert "battery-tips.example" in _hosts(_INBOX_BODY)
+    assert check_egress_text(_INBOX_BODY, EGRESS).action == "refuse"  # the J14 reply scan
+
+
+def test_the_owner_exemption_does_not_open_external_recipients_or_other_tools() -> None:
+    for to in (INSTALLER, "owner@home.example.evil.example", "attacker@evil.example"):
+        call = ToolCall("send_email", {"to": to, "subject": "s", "body": _INBOX_BODY})
+        d = check_tool_call(call, _MAIL_LABELS, EGRESS)
+        assert d.action == "refuse", to
+        assert "tool-arg-egress" in d.rule_ids, to
+    phish = ToolCall("send_email", {"to": INSTALLER, "subject": "s", "body": PHISH})
+    assert check_tool_call(phish, _MAIL_LABELS, EGRESS).action == "refuse"
+    # the other scanned arguments are unaffected: a note and a POST still name no stray host
+    note = ToolCall("add_note", {"text": PHISH})
+    assert check_tool_call(note, {"text": {"trusted_user"}}, EGRESS).action == "refuse"
+    post = ToolCall("http_post", {"url": "https://api.grid-operator.example/x", "payload": PHISH})
+    assert (
+        check_tool_call(post, {"url": {"trusted_user"}, "payload": {"trusted_user"}}, EGRESS).action
+        == "refuse"
+    )
+
+
+def test_the_owner_exemption_needs_a_valid_owner_recipient() -> None:
+    body = {"subject": "s", "body": PHISH}
+    for to in ("a@home.example, b@evil.example", "owner@home.example.evil.example", "x"):
+        d = check_tool_call(ToolCall("send_email", {"to": to, **body}), _MAIL_LABELS, EGRESS)
+        assert d.action == "refuse" and "tool-arg-egress" in d.rule_ids, to
+    # no recipient at all: required-argument error, and the scan stays on
+    d = check_tool_call(ToolCall("send_email", body), _MAIL_LABELS, EGRESS)
+    assert "tool-arg-missing" in d.rule_ids and "tool-arg-egress" in d.rule_ids
+    # the owner's domain by subdomain only with a wildcard entry
+    assert egress_scan_skipped("owner@sub.home.example", EGRESS) is False
+
+
+def egress_scan_skipped(to: str, policy: ToolPolicy) -> bool:
+    call = ToolCall("send_email", {"to": to, "subject": "s", "body": PHISH})
+    return "tool-arg-egress" not in check_tool_call(call, _MAIL_LABELS, policy).rule_ids
+
+
+def test_internal_domains_and_recipient_of_are_validated() -> None:
+    with pytest.raises(ToolPolicyError):
+        _policy_with_egress({"internal_domains": "home.example"})
+    with pytest.raises(ToolPolicyError):
+        _policy_with_egress({"internal_domains": ["not a host"]})
+    wild = _policy_with_egress({"internal_domains": ["*.Home.Example"]})
+    assert wild.egress is not None and wild.egress.internal_domains == ("*.home.example",)
+
+    def mail(of: Any) -> ToolPolicy:
+        return ToolPolicy.from_dict(
+            {
+                "egress": {"internal_domains": ["home.example"]},
+                "tools": {
+                    "send_email": {
+                        "capability": "external-send",
+                        "args": {
+                            "to": {"type": "string", "recipient_of": of},
+                            "body": {"type": "string", "untrusted": "allow", "scan_hosts": True},
+                        },
+                    }
+                },
+            }
+        )
+
+    for bad in ("nope", "to", [], [1]):
+        with pytest.raises(ToolPolicyError, match="recipient_of"):
+            mail(bad)
+    declared = mail(
+        "body"
+    )  # a recipient declared with recipient_of alone, no allowed_email_domains
+    call = ToolCall("send_email", {"to": OWNER, "body": PHISH})
+    assert check_tool_call(call, _MAIL_LABELS, declared).action == "allow"
+    call = ToolCall("send_email", {"to": "a@evil.example", "body": PHISH})
+    assert check_tool_call(call, _MAIL_LABELS, declared).action == "refuse"
 
 
 def test_scan_hosts_without_an_egress_block_is_a_policy_error() -> None:
@@ -308,7 +405,9 @@ def test_the_default_policy_is_the_noegress_policy_plus_the_rule() -> None:
     assert BASE.tools.keys() == EGRESS.tools.keys()
     for name, spec in BASE.tools.items():
         other = EGRESS.tools[name]
-        stripped = {a: replace(p, scan_hosts=False) for a, p in other.args.items()}
+        stripped = {
+            a: replace(p, scan_hosts=False, recipient_of=None) for a, p in other.args.items()
+        }
         assert stripped == spec.args, name
         assert (other.capability, other.result_labels) == (spec.capability, spec.result_labels)
     assert (BASE.on_violation, BASE.rule_of_two) == (EGRESS.on_violation, EGRESS.rule_of_two)
@@ -426,10 +525,10 @@ def test_replay_of_a_cache_recorded_without_the_rule_rescores_under_the_default(
 
     # the default policy refuses the mail, so the model's next request is not in the cache ...
     with pytest.raises(LLMError, match="not in"):
-        run_llm_case(_quoting_model(cache, offline=True), TASK["B05"], None, "args", EGRESS)
+        run_llm_case(_quoting_model(cache, offline=True), TASK["B05"], None, "args", STRICT)
     # ... unless the replay says which policy the cache was recorded under
     replay = run_llm_case(
-        _quoting_model(cache, offline=True), TASK["B05"], None, "args", EGRESS, recorded_under=BASE
+        _quoting_model(cache, offline=True), TASK["B05"], None, "args", STRICT, recorded_under=BASE
     )
     assert not replay.result.utility  # counterfactual: the mail the owner was to get is refused
     assert [(b.tool, b.rule_ids) for b in replay.result.blocked] == [
@@ -441,3 +540,7 @@ def test_replay_of_a_cache_recorded_without_the_rule_rescores_under_the_default(
         _quoting_model(cache, offline=True), TASK["B05"], None, "args", BASE, recorded_under=BASE
     )
     assert same.result == recorded.result  # same policy twice: nothing changes
+
+    # the default policy sends the mail to the owner, so the cache replays as recorded
+    default = run_llm_case(_quoting_model(cache, offline=True), TASK["B05"], None, "args", EGRESS)
+    assert default.result == recorded.result and not default.result.blocked

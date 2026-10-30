@@ -22,7 +22,9 @@ Limits, by design:
   link in the reply makes no tool call. The ``egress`` block (on in the default policy) covers
   the link case deterministically (``check_egress_text``): every host named in the reply (or in a
   text argument marked ``scan_hosts``) must be allow-listed or must already appear in the owner's
-  own text. It says nothing about false claims without a link.
+  own text. It says nothing about false claims without a link. Text sent to the owner's own
+  domain (``egress.internal_domains``, via the recipient argument) is not scanned: egress to the
+  trusted principal is not exfiltration.
 * When the user legitimately routes untrusted data into an argument the policy allows
   (``untrusted: allow``), the gate checks bounds, not truth, as ``spec.py`` does.
 * The Rule of Two is session-wide and coarse. It cannot tell that a state change was
@@ -65,7 +67,13 @@ _ARG_TYPES = ("number", "string", "boolean")
 _UNTRUSTED_MODES = ("forbid", "allow")
 
 _ROOT_KEYS = {"version", "on_violation", "rule_of_two", "egress", "tools"}
-_EGRESS_KEYS = {"allowed_hosts", "trust_user_text", "include_tool_hosts", "on_violation"}
+_EGRESS_KEYS = {
+    "allowed_hosts",
+    "internal_domains",
+    "trust_user_text",
+    "include_tool_hosts",
+    "on_violation",
+}
 _TOOL_KEYS = {"capability", "description", "result_labels", "args"}
 _ARG_KEYS = {
     "type",
@@ -76,6 +84,7 @@ _ARG_KEYS = {
     "allowed_values",
     "allowed_hosts",
     "allowed_email_domains",
+    "recipient_of",
     "scan_hosts",
 }
 
@@ -123,6 +132,7 @@ class ArgPolicy:
     allowed_values: tuple[str | float, ...] | None = None
     allowed_hosts: tuple[str, ...] | None = None
     allowed_email_domains: tuple[str, ...] | None = None
+    recipient_of: tuple[str, ...] | None = None
     scan_hosts: bool = False
 
 
@@ -151,9 +161,16 @@ class EgressPolicy:
     text (``trust_user_text``: the user prompt is the trusted provenance) or when a tool's
     ``allowed_hosts`` lists it (``include_tool_hosts``). ``on_violation`` is the action for a
     reply that names any other host; the reply is redacted unless a human approves.
+
+    ``internal_domains`` (``*.suffix`` matches subdomains) are the trusted principal's own
+    domains. A ``scan_hosts`` argument is not scanned when the call's recipient argument (one
+    with ``allowed_email_domains``, or one declaring ``recipient_of``) is an address in them:
+    text sent to the owner leaves no trust boundary. The domains are not added to the
+    allow-list, and the reply check ignores them.
     """
 
     allowed_hosts: tuple[str, ...] = ()
+    internal_domains: tuple[str, ...] = ()
     trust_user_text: bool = True
     include_tool_hosts: bool = True
     on_violation: str = "refuse"
@@ -196,6 +213,14 @@ class ToolPolicy:
                     if arg.scan_hosts:
                         raise ToolPolicyError(
                             f"tools.{tool_name}.args.{arg_name}: scan_hosts needs an egress block"
+                        )
+        for tool_name, spec in tools.items():
+            for arg_name, arg in spec.args.items():
+                for target in arg.recipient_of or ():
+                    if target == arg_name or target not in spec.args:
+                        raise ToolPolicyError(
+                            f"tools.{tool_name}.args.{arg_name}.recipient_of: "
+                            f"{target!r} is not another argument of the tool"
                         )
         return cls(tools=tools, on_violation=on_violation, rule_of_two=rule_of_two, egress=egress)
 
@@ -289,6 +314,19 @@ def _parse_arg(tool: str, name: str, raw: Any) -> ArgPolicy:
         for d in emails:
             if not _HOST_RE.match(d):
                 raise ToolPolicyError(f"{where}.allowed_email_domains: bad domain {d!r}")
+    recipient_of = None
+    if "recipient_of" in body:
+        raw_of = body["recipient_of"]
+        if arg_type != "string":
+            raise ToolPolicyError(f"{where}: recipient_of needs type string")
+        names = [raw_of] if isinstance(raw_of, str) else raw_of
+        if (
+            not isinstance(names, list)
+            or not names
+            or not all(isinstance(n, str) and n for n in names)
+        ):
+            raise ToolPolicyError(f"{where}.recipient_of must name one or more arguments")
+        recipient_of = tuple(names)
     scan_hosts = body.get("scan_hosts", False)
     if not isinstance(scan_hosts, bool):
         raise ToolPolicyError(f"{where}.scan_hosts must be true or false")
@@ -303,6 +341,7 @@ def _parse_arg(tool: str, name: str, raw: Any) -> ArgPolicy:
         allowed_values=allowed_values,
         allowed_hosts=hosts,
         allowed_email_domains=emails,
+        recipient_of=recipient_of,
         scan_hosts=scan_hosts,
     )
 
@@ -320,6 +359,15 @@ def _parse_egress(raw: Any) -> EgressPolicy:
     for h in hosts:
         if not _HOST_RE.match(h.removeprefix("*.")):
             raise ToolPolicyError(f"{where}.allowed_hosts: bad host {h!r}")
+    internal: list[str] = []
+    raw_internal = body.get("internal_domains", [])
+    if not isinstance(raw_internal, list):
+        raise ToolPolicyError(f"{where}.internal_domains must be a list")
+    if raw_internal:
+        internal = [d.casefold() for d in _string_list(raw_internal, f"{where}.internal_domains")]
+    for d in internal:
+        if not _HOST_RE.match(d.removeprefix("*.")):
+            raise ToolPolicyError(f"{where}.internal_domains: bad domain {d!r}")
     flags: dict[str, bool] = {}
     for key in ("trust_user_text", "include_tool_hosts"):
         value = body.get(key, True)
@@ -331,6 +379,7 @@ def _parse_egress(raw: Any) -> EgressPolicy:
         raise ToolPolicyError(f"{where}.on_violation must be one of {_VIOLATION_ACTIONS}")
     return EgressPolicy(
         allowed_hosts=tuple(hosts),
+        internal_domains=tuple(internal),
         trust_user_text=flags["trust_user_text"],
         include_tool_hosts=flags["include_tool_hosts"],
         on_violation=on_violation,
@@ -644,6 +693,30 @@ def _type_ok(value: Any, arg_type: str) -> bool:
     return isinstance(value, str)
 
 
+def _internal_scope(spec: ToolSpec, call: ToolCall, egress: EgressPolicy | None) -> frozenset[str]:
+    """Arguments of ``call`` whose text goes only to the owner's own domain, so ``scan_hosts``
+    does not apply to them. A recipient argument is one with ``allowed_email_domains`` (it
+    covers every ``scan_hosts`` argument of the tool) or one declaring ``recipient_of`` (it
+    covers the arguments named). Every recipient that covers an argument must be a single plain
+    e-mail address in ``egress.internal_domains``; anything else leaves the scan on."""
+    if egress is None or not egress.internal_domains:
+        return frozenset()
+    scanned = {n for n, a in spec.args.items() if a.scan_hosts and n in call.args}
+    exempt: set[str] = set()
+    external: set[str] = set()
+    for name, arg in spec.args.items():
+        if arg.allowed_email_domains is None and arg.recipient_of is None:
+            continue
+        covers = set(arg.recipient_of) if arg.recipient_of is not None else scanned
+        value = call.args.get(name)
+        match = _EMAIL_RE.match(value) if isinstance(value, str) else None
+        if match is not None and _host_ok(match.group(1).casefold(), egress.internal_domains):
+            exempt |= covers
+        else:
+            external |= covers
+    return frozenset((exempt & scanned) - external)
+
+
 def _check_arg(
     name: str,
     value: Any,
@@ -718,6 +791,7 @@ def check_tool_call(
         if policy.egress is not None and any(a.scan_hosts for a in spec.args.values())
         else None
     )
+    internal = _internal_scope(spec, call, policy.egress)
     for name in call.args:
         if name not in spec.args:
             out.add("tool-arg-unknown", f"{name}: argument is not declared for {call.tool}", name)
@@ -726,7 +800,14 @@ def check_tool_call(
             if arg_policy.required:
                 out.add("tool-arg-missing", f"{name}: required argument is missing", name)
             continue
-        _check_arg(name, call.args[name], _arg_labels(name, labels), arg_policy, out, egress_hosts)
+        _check_arg(
+            name,
+            call.args[name],
+            _arg_labels(name, labels),
+            arg_policy,
+            out,
+            None if name in internal else egress_hosts,
+        )
 
     actions: list[str] = []
     if out.codes:

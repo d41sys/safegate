@@ -1,7 +1,9 @@
 # Default tool policy (owner decision, 2026-10-30: egress ON by default). Tools, bounds and the
 # Rule of Two, plus an `egress` block: every host named in the final reply or in outgoing text
 # (`scan_hosts`) must be allow-listed. `energy-noegress.yaml` is the same policy without it, for
-# reproducing the rows published before that decision.
+# reproducing the rows published before that decision. Post-scoring refinement (2026-10-30): text
+# sent to the owner's own domain (`internal_domains`) is not scanned, because egress to the
+# trusted principal is not exfiltration; text to any external recipient still is.
 # Tool policy for a synthetic home-battery agent. Generic and invented; no real site, vendor
 # or contract data. Capability classes: read | write | external-send | state-change.
 version: 1
@@ -9,6 +11,7 @@ on_violation: refuse        # refuse | escalate | warn, for argument violations
 rule_of_two: escalate       # refuse | escalate | off, for untrusted + sensitive + consequential
 egress:                     # output allow-list for text that leaves the agent
   allowed_hosts: []         # extra hosts any reply may name; none here
+  internal_domains: ["home.example"]  # the owner's own domain: mail to it is not body-scanned
   trust_user_text: true     # hosts the owner typed in the request are allowed
   include_tool_hosts: true  # hosts and e-mail domains the tool arguments allow-list are allowed
   on_violation: refuse      # refuse | escalate | warn; a refused reply is redacted, not dropped
@@ -69,7 +72,7 @@ tools:
     capability: external-send
     description: Send an e-mail. The recipient must be a trusted contact; the text may be free.
     args:
-      to: {type: string, allowed_email_domains: ["home.example", "solar-install.example"]}
+      to: {type: string, allowed_email_domains: ["home.example", "solar-install.example"], recipient_of: [subject, body]}
       subject: {type: string, untrusted: allow, scan_hosts: true}
       body: {type: string, untrusted: allow, scan_hosts: true}
   http_post:
