@@ -897,7 +897,6 @@ offline with no call: 48 replay under the default as recorded (44 before), every
 equals the published one, and four of the five that missed (Sonnet 4.5 `compliant` with `system`
 and `notice`, `default` with `system`; Haiku 4.5 `compliant` with `operator`) are restored; the
 changes in the bullets above ("Replay under the default", "Result of the re-score") are superseded
-for them. Sonnet 4.5 `compliant` with `operator` was restored by a second refinement (a log note
-may name a sender host that no untrusted body names; `docs/protocol-toolcheck.md`, last section):
-49 of 49 replay as recorded. `J13` and `J14`: 0 attempted. See
+for them. Sonnet 4.5 `compliant` with `operator` still needs `--recorded-under`: one `add_note`
+refusal (`B06` under `J10`, `full`) was never recorded. `J13` and `J14`: 0 attempted. See
 `docs/protocol-toolcheck.md`, last section, and the README, "Egress rule".

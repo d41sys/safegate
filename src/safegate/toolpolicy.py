@@ -24,9 +24,7 @@ Limits, by design:
   text argument marked ``scan_hosts``) must be allow-listed or must already appear in the owner's
   own text. It says nothing about false claims without a link. Text sent to the owner's own
   domain (``egress.internal_domains``, via the recipient argument) is not scanned: egress to the
-  trusted principal is not exfiltration. An argument with ``sender_hosts: allow`` (the log note)
-  may also name a host from a sender field of an untrusted result (``sender_fields``, the From
-  address) that no untrusted body names; sender fields are attacker-controlled too.
+  trusted principal is not exfiltration.
 * When the user legitimately routes untrusted data into an argument the policy allows
   (``untrusted: allow``), the gate checks bounds, not truth, as ``spec.py`` does.
 * The Rule of Two is session-wide and coarse. It cannot tell that a state change was
@@ -76,7 +74,7 @@ _EGRESS_KEYS = {
     "include_tool_hosts",
     "on_violation",
 }
-_TOOL_KEYS = {"capability", "description", "result_labels", "sender_fields", "args"}
+_TOOL_KEYS = {"capability", "description", "result_labels", "args"}
 _ARG_KEYS = {
     "type",
     "required",
@@ -88,7 +86,6 @@ _ARG_KEYS = {
     "allowed_email_domains",
     "recipient_of",
     "scan_hosts",
-    "sender_hosts",
 }
 
 _HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
@@ -137,7 +134,6 @@ class ArgPolicy:
     allowed_email_domains: tuple[str, ...] | None = None
     recipient_of: tuple[str, ...] | None = None
     scan_hosts: bool = False
-    allow_sender_hosts: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,7 +145,6 @@ class ToolSpec:
     args: dict[str, ArgPolicy]
     result_labels: Labels = frozenset()
     description: str = ""
-    sender_fields: tuple[str, ...] = ()
 
     @property
     def consequential(self) -> bool:
@@ -337,11 +332,6 @@ def _parse_arg(tool: str, name: str, raw: Any) -> ArgPolicy:
         raise ToolPolicyError(f"{where}.scan_hosts must be true or false")
     if scan_hosts and arg_type != "string":
         raise ToolPolicyError(f"{where}: scan_hosts needs type string")
-    sender_mode = body.get("sender_hosts", "forbid")
-    if sender_mode not in _UNTRUSTED_MODES:
-        raise ToolPolicyError(f"{where}.sender_hosts must be one of {_UNTRUSTED_MODES}")
-    if sender_mode == "allow" and not scan_hosts:
-        raise ToolPolicyError(f"{where}: sender_hosts: allow needs scan_hosts")
     return ArgPolicy(
         type=arg_type,
         required=required,
@@ -353,7 +343,6 @@ def _parse_arg(tool: str, name: str, raw: Any) -> ArgPolicy:
         allowed_email_domains=emails,
         recipient_of=recipient_of,
         scan_hosts=scan_hosts,
-        allow_sender_hosts=sender_mode == "allow",
     )
 
 
@@ -417,10 +406,7 @@ def _parse_tool(name: str, raw: Any) -> ToolSpec:
     raw_args = body.get("args", {})
     args_map = _mapping(raw_args, f"{where}.args")
     args = {str(a): _parse_arg(name, str(a), p) for a, p in args_map.items()}
-    raw_senders = body.get("sender_fields", [])
-    if not isinstance(raw_senders, list) or not all(isinstance(f, str) and f for f in raw_senders):
-        raise ToolPolicyError(f"{where}.sender_fields must be a list of field names")
-    return ToolSpec(name, capability, args, result_labels, description, tuple(raw_senders))
+    return ToolSpec(name, capability, args, result_labels, description)
 
 
 def load_tool_policy(source: Path | str) -> ToolPolicy:
@@ -507,44 +493,6 @@ class Session:
         if decision.action in ("allow", "warn"):
             self.record(call, labels, policy)
         return decision
-
-
-@dataclass
-class UntrustedInputs:
-    """Hosts in the untrusted tool results a run has read, split by where they sat.
-
-    ``sender_hosts``: hosts in fields a tool declares as ``sender_fields`` (the From address of a
-    mail). ``body_hosts``: hosts in every other string of an untrusted result. An argument with
-    ``sender_hosts: allow`` may name a sender host that no body names (``allowed_sender_hosts``).
-    Both come from the text of the results, not from labels, and every sender field is as
-    attacker-controlled as the body: the exemption narrows what a note may carry, it does not
-    make a sender trusted.
-    """
-
-    sender_hosts: set[str] = field(default_factory=set)
-    body_hosts: set[str] = field(default_factory=set)
-
-    def observe(self, policy: ToolPolicy, tool: str, value: Any) -> None:
-        """Record the hosts of an untrusted result of ``tool`` (others are ignored)."""
-        spec = policy.tools.get(tool)
-        if spec is None or not is_untrusted(spec.result_labels):
-            return
-        self._walk(value, frozenset(spec.sender_fields), False)
-
-    def _walk(self, value: Any, sender_fields: frozenset[str], is_sender: bool) -> None:
-        if isinstance(value, str):
-            hosts = {h for _, _, h in hosts_in_text(value) if h != UNPARSEABLE_HOST}
-            (self.sender_hosts if is_sender else self.body_hosts).update(hosts)
-        elif isinstance(value, Mapping):
-            for key, item in value.items():
-                self._walk(item, sender_fields, is_sender or key in sender_fields)
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                self._walk(item, sender_fields, is_sender)
-
-    def allowed_sender_hosts(self) -> tuple[str, ...]:
-        """Sender hosts that no untrusted body names."""
-        return tuple(sorted(self.sender_hosts - self.body_hosts))
 
 
 # --------------------------------------------------------------------------------------
@@ -769,16 +717,6 @@ def _internal_scope(spec: ToolSpec, call: ToolCall, egress: EgressPolicy | None)
     return frozenset((exempt & scanned) - external)
 
 
-def _egress_for(
-    hosts: tuple[str, ...] | None, policy: ArgPolicy, inputs: UntrustedInputs | None
-) -> tuple[str, ...] | None:
-    """The hosts one argument may name: the shared list, plus the sender hosts that no untrusted
-    body names when the argument declares ``sender_hosts: allow``."""
-    if hosts is None or inputs is None or not policy.allow_sender_hosts:
-        return hosts
-    return hosts + inputs.allowed_sender_hosts()
-
-
 def _check_arg(
     name: str,
     value: Any,
@@ -819,7 +757,6 @@ def check_tool_call(
     policy: ToolPolicy,
     session: Session | None = None,
     trusted_text: Iterable[str] = (),
-    untrusted_inputs: UntrustedInputs | None = None,
 ) -> Decision:
     """Check one proposed tool call against ``policy``; return a safegate ``Decision``.
 
@@ -835,9 +772,7 @@ def check_tool_call(
     argument problems) and ``policy.rule_of_two``. An unknown tool is always refused.
 
     With an ``egress`` block, arguments marked ``scan_hosts`` must not name a host outside
-    ``egress_allowed_hosts(policy, trusted_text)`` (rule id ``tool-arg-egress``). An argument
-    with ``sender_hosts: allow`` may also name a host from ``untrusted_inputs.sender_hosts`` that
-    no untrusted body names; without ``untrusted_inputs`` it gets no such exemption.
+    ``egress_allowed_hosts(policy, trusted_text)`` (rule id ``tool-arg-egress``).
     """
     spec = policy.tools.get(call.tool)
     if spec is None:
@@ -871,7 +806,7 @@ def check_tool_call(
             _arg_labels(name, labels),
             arg_policy,
             out,
-            None if name in internal else _egress_for(egress_hosts, arg_policy, untrusted_inputs),
+            None if name in internal else egress_hosts,
         )
 
     actions: list[str] = []

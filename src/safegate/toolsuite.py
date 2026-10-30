@@ -31,7 +31,6 @@ from safegate.flow import Labeled
 from safegate.toolpolicy import (
     Session,
     ToolPolicy,
-    UntrustedInputs,
     call_from_labeled,
     check_egress_text,
     check_tool_call,
@@ -762,7 +761,6 @@ class _Run:
     session: Session = field(default_factory=Session)
     blocked: list[Blocked] = field(default_factory=list)
     trusted_text: tuple[str, ...] = ()  # the owner's own words: hosts in them are allowed
-    inputs: UntrustedInputs = field(default_factory=UntrustedInputs)  # hosts in what was read
 
     def guard_reply(self, text: str, by_attacker: bool) -> str:
         """Apply the egress rule to the final reply: redact hosts that are not allow-listed.
@@ -789,17 +787,9 @@ class _Run:
         if self.condition == "none":
             decision = None
         elif self.condition == "full":
-            decision = check_tool_call(
-                call, labels, self.policy, self.session, self.trusted_text, self.inputs
-            )
+            decision = check_tool_call(call, labels, self.policy, self.session, self.trusted_text)
         else:
-            decision = check_tool_call(
-                call,
-                labels,
-                self.policy,
-                trusted_text=self.trusted_text,
-                untrusted_inputs=self.inputs,
-            )
+            decision = check_tool_call(call, labels, self.policy, trusted_text=self.trusted_text)
         if decision is not None and decision.action not in ("allow", "warn"):
             self.blocked.append(
                 Blocked(tool, decision.action, tuple(decision.rule_ids), by_attacker)
@@ -807,7 +797,6 @@ class _Run:
             if not (self.approve and decision.action == "escalate"):
                 return None
         value = _execute(self.env, tool, call.args)
-        self.inputs.observe(self.policy, tool, value)
         if self.condition == "full" and tool in self.policy.tools:
             self.session.record(call, labels, self.policy)
         if tool in self.policy.tools:
