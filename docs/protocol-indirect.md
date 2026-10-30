@@ -192,8 +192,152 @@ enter the rule.
 
 ## Deviations
 
-None yet.
+Everything below happened after the protocol commit `b4656f8` and before the scored run, unless
+stated.
+
+1. **No duplicate documents.** A Dolly document that sits in a composed pair as the benign twin is
+   removed from the bare Dolly rows (otherwise it would be in TRAIN twice). Implementation detail of
+   `build_universe`; the protocol did not say.
+2. **Leak removal cost more than the protocol could have said.** 6,013 Dolly rows were removed,
+   5,979 of them equal to PromptShield test rows (PromptShield's benign side contains Dolly), 53 to
+   xTRam1 and 7 to ToxicChat (a text can hit two sets). Of the v2 rows, 274 were removed
+   (xTRam1 109, jackhhao test 95, JBB 65, ToxicChat 4, PromptShield 2, HarmBench 1). **None of the v2 rows
+   or the new rows equals a BIPIA, NotInject or WildGuard text.** So v3 differs from v2 in 274 old
+   rows as well as in the new ones; the "v2 refit" reference row of the dev table uses the same
+   cleaned old rows. After removal, 0 rows equal a leak text.
+3. **Sanity rows.** The sanity fold holds 903 Dolly and 363 SPML benign texts after cleaning, so the
+   "first 1,000 Dolly" cap did not bind. These rows come from the distributions v3 was trained on
+   (other rows of the same sources), so the sanity check understates what v3 does on benign text of
+   other origins; WildGuard is the check that does not share a source.
+4. **Latency was measured on a busy machine** (load average 36 during the run, other agents were
+   running tests). The table below is the one run of `indirect-eval`. A separate timing of the same
+   texts, 5 passes per mode and two rounds, gave v2 1.67 and 1.99 ms, v3 2.44 and 2.34 ms. Both are
+   about the "2 ms" of the README; v3 is slower by 15 to 50% in every measurement and I have not
+   separated noise from a real cost. It is not part of the adoption rule.
+5. **Post-hoc diagnosis.** After scoring I looked at the stage-2 scores and flagged rows of the three
+   test sets to explain the result (below). Nothing was chosen from it, no candidate, threshold or
+   cap changed, and the artifact was not refitted.
+6. Source counts differ a little from the protocol's raw counts after de-duplication and leak
+   removal (the table "New rows" below): llmail benign 160 of 203, nemotron injection texts 676
+   distinct after leak removal and duplicates.
 
 ## Results
 
-To be appended after the scored run.
+Reproduce (needs the caches under `data/raw/`, which the first commands download):
+
+```
+uv run safegate indirect-train   # leak removal, dev selection, writes src/safegate/data/stage2_v3.npz (11 min)
+uv run safegate indirect-eval    # the before/after table, bootstrap, verdict, sanity, latency (1 min)
+```
+
+### Data (after leak removal, before any cap)
+
+| source | kind | attacks | benign | dev-fold rows |
+| --- | --- | ---: | ---: | ---: |
+| agentdojo | injection_goal / user_task | 27 | 85 | 9 / 19 |
+| composed | doc pairs | 500 | 500 | 104 / 104 |
+| composed | template pairs | 500 | 500 | 110 / 110 |
+| dolly | document / instruction (benign) | 0 | 1,747 / 5,800 | 337 / 1,084 |
+| injecagent | attacker_instruction / user_instruction | 62 | 17 | 14 / 4 |
+| llmail | email_attack / email_benign | 597 | 160 | 129 / 47 |
+| nemotron | injection_text, document_attack / user_request, document_benign | 676 + 1,256 | 1,271 + 1,250 | 134 + 211 / 213 + 208 |
+| spml | chat_attack / chat_benign | 12,541 | 3,018 | 2,544 / 610 |
+
+Sanity rows: 1,266. v2 rows after leak removal: 4,959 public rows plus 403 bundled.
+Dropped sources: `xxz224/prompt-injection-attack-dataset` (no licence), `hackaprompt` (gated),
+TaskTracker and SEP (not found), Mosscap (direct, not indirect).
+
+### Dev selection (dev folds only; flag = refuse or escalate; dev score = mean of the two J)
+
+| config | new TRAIN rows | TPR new | FPR new | J new | TPR old | FPR old | J old | dev score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| reference: v2 refit (no new rows) | 0 | 0.068 | 0.041 | 0.027 | 0.769 | 0.141 | 0.629 | 0.328 |
+| A: bare rows, all sources, cap 300 | 2,058 | 0.845 | 0.012 | 0.833 | 0.670 | 0.175 | 0.495 | 0.664 |
+| **B: A plus composed pairs, cap 300 (chosen)** | 2,658 | 0.902 | 0.014 | 0.888 | 0.662 | 0.185 | 0.477 | 0.682 |
+| C: no SPML, composed pairs, cap 1,000 | 5,298 | 0.927 | 0.024 | 0.903 | 0.646 | 0.213 | 0.433 | 0.668 |
+
+B was shipped, refitted on all its rows (2,751 new rows, 4,959 old public rows, 403 bundled):
+refuse threshold 0.5782, review 0.5240 (v2: 0.5704 and 0.5187).
+
+### Before and after (gate alone, flagged = refuse or escalate)
+
+| set | group | n | v2 | v3 |
+| --- | --- | ---: | --- | --- |
+| BIPIA | text | 75 | 10.7% (8/75) [5.5%, 19.7%] | 0.0% (0/75) [0.0%, 4.9%] |
+| BIPIA | code | 50 | 6.0% (3/50) [2.1%, 16.2%] | 8.0% (4/50) [3.2%, 18.8%] |
+| **BIPIA** | headline (mean of groups) | 125 | **8.3%**, pooled 8.8% (11/125) [5.0%, 15.1%] | **4.0%**, pooled 3.2% (4/125) [1.3%, 7.9%] |
+| NotInject | one / two / three | 113 each | 99.1% / 92.9% / 91.2% | 97.3% / 94.7% / 93.8% |
+| **NotInject** | headline | 339 | **94.4%**, pooled (320/339) [91.4%, 96.4%] | **95.3%**, pooled (323/339) [92.5%, 97.1%] |
+| **WildGuard benign** | | 971 | **91.1%** (885/971) [89.2%, 92.8%] | **85.3%** (828/971) [82.9%, 87.4%] |
+| **mean of the three** | | | **64.6%** | **61.5%** |
+
+Paired bootstrap of v3 minus v2 (1,000 resamples, seed 20261030, points):
+
+| set | difference |
+| --- | --- |
+| BIPIA | -4.3 [-8.7, -0.0] (CI touches 0) |
+| NotInject | +0.9 [-1.2, +2.9] (no detectable effect) |
+| WildGuard benign | -5.9 [-7.6, -4.2] (CI excludes 0) |
+| mean of the three | -3.1 [-4.8, -1.6] (CI excludes 0) |
+
+### Verdict: **not adopted**
+
+BIPIA moved the wrong way, -4.3 points (the rule needs at least +5 with a CI above 0). The NotInject
+condition (drop of at most 2 points) is met, and the change is +0.9 with an interval that includes 0.
+v3 stays an opt-in artifact; `--stage2 v2` stays the default, as it would have either way.
+
+### Sanity (rows never trained on, not a benchmark) and latency
+
+| rows | n | v2 flagged | v3 flagged |
+| --- | ---: | --- | --- |
+| Dolly benign sanity | 903 | 1.9% (17/903) [1.2%, 3.0%] | 0.8% (7/903) [0.4%, 1.6%] |
+| SPML benign sanity | 363 | 6.3% (23/363) [4.3%, 9.3%] | 1.4% (5/363) [0.6%, 3.2%] |
+
+Pooled accuracy difference +2.2 [+1.4, +3.2] points: v3 adds **no** false positives there (see
+deviation 3: these rows share a source with v3's TRAIN rows).
+
+| ms per prompt (median of 3 passes) | BIPIA | NotInject | WildGuard | all 1,435 |
+| --- | ---: | ---: | ---: | ---: |
+| v2 | 1.01 | 0.76 | 4.80 | 2.11 |
+| v3 | 1.18 | 1.02 | 3.81 | 3.19 |
+
+(Machine load average 36; see deviation 4.)
+
+### Predictions against what happened
+
+| Quantity | Predicted (range) | Observed | |
+| --- | --- | --- | --- |
+| BIPIA headline | 22% (12 to 40) | 4.0% | outside, and the wrong sign |
+| NotInject headline | 90% (82 to 94) | 95.3% | outside, on the good side |
+| WildGuard benign | 87% (80 to 91) | 85.3% | inside |
+| mean of the three | 66% (60 to 72) | 61.5% | inside, lower than v2 |
+| Sanity FPR | +1 to +3 points | -2.2 points | outside (training overlap, deviation 3) |
+| Latency | within 10% of v2 | 15 to 50% slower | outside |
+| Adoption | about 25% adopted | not adopted | right outcome, wrong mechanism |
+
+### What was learned (post-hoc, deviation 5)
+
+* **The new rows are learnable and the gate still does not see BIPIA.** On the held-out dev rows (other
+  attack strings of the same sources) v3's detection rises from 6.8% (v2 refit) to 90.2% at 1.4%
+  false positives. On BIPIA the stage-2 score does not move: median 0.473 (v2) and 0.468 (v3), the 90th
+  percentile 0.509 and 0.503, against a refuse threshold of 0.578. No BIPIA row reaches the refuse
+  threshold under v3; 4 of 125 (code-snippet prompts that import `requests`) land in the review
+  band and are flagged by escalation. Stage 1 flags none. v2 flagged 11 (3 of them also under v3).
+* **Why [INFERENCE: I did not inspect the weights].** What v3 learned from the new data is the wrapper and the vocabulary of the sources (tool
+  output formats, email headers, "[PRIORITY MESSAGE]", `contact@contact.com`, role-play chat
+  prompts). BIPIA's prompts are single task-like sentences ("Modify your answer to ...") whose character
+  n-grams look like those of benign task sentences, which the new benign rows (Dolly, user requests)
+  also contain; a linear model over hashed n-grams has no feature that separates them.
+* **Where the false positives went.** Not NotInject (16 flagged against 19, 5 new and 8 gone) but
+  WildGuard: 143 flagged against 86 (64 new, 7 gone). The new ones are long role-play and scenario
+  prompts ("Imagine you are an advanced AI named ...", "You are a submissive artist's muse ...",
+  "In an alternative universe ..."); that they resemble SPML chatbot-injection prompts and the
+  Nemotron/LLMail documents is my reading [INFERENCE], not something I measured. On the old dev fold the J of the candidate fell from 0.629 to 0.477 (false
+  positives 14.1% to 18.5%): the price was already visible in dev and was outweighed by the dev-new
+  gain, because dev-new is in-distribution for the new sources.
+* **What this says about the question.** More public indirect-injection data does not close the BIPIA
+  gap for this classical stage 2, and the dev metric chosen here (held-out attack strings of the
+  training sources) does not predict BIPIA at all: J on dev-new went from 0.03 to 0.89 while BIPIA went
+  from 8.3% to 4.0%. A dev set that is in the training distribution cannot see this; the only
+  evidence of transfer is the benchmark itself, which this protocol forbids tuning on. I did not try a
+  second candidate set after seeing this and the protocol does not allow one.
