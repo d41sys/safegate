@@ -24,12 +24,17 @@ import numpy as np
 from safegate.stage2 import Stage2Model, fit_stage2
 from safegate.taxonomy import AttackCategory, Sample
 
-STAGE2_MODES = ("legacy", "v2")
+STAGE2_MODES = ("legacy", "v2", "v3")
 # The leave-one-dataset-out decision rule (README, "Pooled stage 2 (leave-one-dataset-out)")
 # passed, so the pooled v2 model is the default; legacy stays selectable with stage2="legacy"
 # or `safegate check --stage2 legacy`. (The earlier two-dataset v2 had failed its own rule.)
+# v3 is opt-in (`--stage2 v3`): v2's pooled rows plus indirect-injection rows, see
+# docs/protocol-indirect.md. It is never the default.
 DEFAULT_STAGE2 = "v2"
 SHIPPED_MODEL = "data/stage2_v2.npz"  # trained by `safegate stage2-train`; see README
+MODEL_ARTIFACTS = {"v2": SHIPPED_MODEL, "v3": "data/stage2_v3.npz"}  # `safegate indirect-train`
+MODEL_MODES = tuple(MODEL_ARTIFACTS)  # the modes backed by a Stage2Model artifact
+COMPARED_MODES = ("legacy", "v2")  # what `--stage2 both` runs; v3 is only run when asked for
 
 # Zero-width characters used for evasion
 ZERO_WIDTH_CHARS = set("\u200b\u200c\u200d\ufeff\u00ad\u2060")
@@ -237,8 +242,10 @@ class InjectionDetector:
     ``stage2="v2"`` (default) is the sparse class-balanced model of :mod:`safegate.stage2` with
     thresholds calibrated on pooled validation folds and an abstain-to-escalate band; it loads the
     shipped ``data/stage2_v2.npz`` (fitted on the bundled set plus the TRAIN splits of four public
-    datasets) unless a ``model`` or ``data_path`` is given. ``stage2="legacy"`` is the original
-    dense hashed logistic regression with a fixed ``threshold``.
+    datasets) unless a ``model`` or ``data_path`` is given. ``stage2="v3"`` is the same model
+    family loaded from ``data/stage2_v3.npz`` (v2's rows plus indirect-injection rows; opt-in, see
+    ``docs/protocol-indirect.md``). ``stage2="legacy"`` is the original dense hashed logistic
+    regression with a fixed ``threshold``.
     """
 
     def __init__(
@@ -260,14 +267,18 @@ class InjectionDetector:
         self.model: Stage2Model | None = model
 
         if model is not None:
-            if stage2 != "v2":
-                raise ValueError("an explicit model needs stage2='v2'")
+            if stage2 not in MODEL_MODES:
+                raise ValueError("an explicit model needs stage2='v2' or 'v3'")
             return
-        if stage2 == "v2" and data_path is None:
-            artifact = Path(str(resources.files("safegate").joinpath(SHIPPED_MODEL)))
+        if stage2 in MODEL_MODES and data_path is None:
+            artifact = Path(str(resources.files("safegate").joinpath(MODEL_ARTIFACTS[stage2])))
             if artifact.exists():
                 self.model = Stage2Model.load(artifact)
                 return
+            if stage2 != "v2":
+                raise FileNotFoundError(
+                    f"stage2={stage2!r} needs {artifact}; build it with `safegate indirect-train`"
+                )
 
         resolved_data_path: Path | None = None
         if data_path:
@@ -297,7 +308,7 @@ class InjectionDetector:
 
     def stage2_score(self, text: str) -> float:
         """Stage-2 probability of attack (0.0 when untrained)."""
-        if self.stage2 == "v2":
+        if self.stage2 in MODEL_MODES:
             return self.model.score(text) if self.model is not None else 0.0
         if not self._is_trained:
             return 0.0
@@ -312,7 +323,7 @@ class InjectionDetector:
 
         v2 chooses its own thresholds on out-of-fold scores of these samples.
         """
-        if self.stage2 == "v2":
+        if self.stage2 in MODEL_MODES:
             if samples:
                 self.model = fit_stage2([s.text for s in samples], [s.is_attack for s in samples])
             return
@@ -439,7 +450,7 @@ class InjectionDetector:
             )
             return Detection(score=score, category=primary_cat, reasons=stage1_reasons)
 
-        if self.stage2 == "v2":
+        if self.stage2 in MODEL_MODES:
             if self.model is None:
                 return Detection(score=0.0, category=None, reasons=[])
             t = self.model.thresholds

@@ -213,7 +213,7 @@ def run_sota(
 
 
 def system_name(stage2: str, config: str, extra: str = "") -> str:
-    gate = "default gate (v2)" if stage2 == "v2" else "legacy gate"
+    gate = {"v2": "default gate (v2)", "v3": "opt-in gate (v3)"}.get(stage2, "legacy gate")
     return f"safegate {gate}, {config}{extra}"
 
 

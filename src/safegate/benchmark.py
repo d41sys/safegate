@@ -276,7 +276,7 @@ def _pct(value: float) -> str:
 
 
 def system_name(stage2: str, config: str) -> str:
-    gate = "default gate (v2)" if stage2 == "v2" else "legacy gate"
+    gate = {"v2": "default gate (v2)", "v3": "opt-in gate (v3)"}.get(stage2, "legacy gate")
     return f"safegate {gate}, {config}"
 
 
@@ -374,7 +374,10 @@ def derived_means(rows: Sequence[BenchmarkRow], acl: bool = False) -> list[tuple
 def print_benchmark(
     stage2: str, fresh: Fresh, rows: Sequence[BenchmarkRow], suites: Sequence[Suite]
 ) -> None:
-    gate = "default gate (`--stage2 v2`)" if stage2 == "v2" else "legacy gate (`--stage2 legacy`)"
+    gate = {
+        "v2": "default gate (`--stage2 v2`)",
+        "v3": "opt-in gate (`--stage2 v3`)",
+    }.get(stage2, "legacy gate (`--stage2 legacy`)")
     print(f"## Benchmark against the InjecGuard paper's public sets: {gate}\n")
     print(
         "Accuracy = share of prompts classified correctly; flagged = `refuse` or `escalate`. "
@@ -503,7 +506,7 @@ def window_protocol(stage2: str, fresh: Fresh, budget: int = BUDGET) -> WindowRe
     """Configurations A (shipped, no windows) and B (shipped + 150:37:0) on the fresh pool."""
     oracle = make_gate_oracle(stage2)
     attacks, benign = adaptive_rows(fresh)
-    label = f"the {'default' if stage2 == 'v2' else 'legacy'} gate (`--stage2 {stage2}`)"
+    label = f"the {_gate_name(stage2)} gate (`--stage2 {stage2}`)"
     config_a = DefenceConfig.of(SHIPPED_COMPONENTS)
     config_b = DefenceConfig.of(SHIPPED_COMPONENTS, WINDOW_CELL)
     runs = [
@@ -584,7 +587,7 @@ def print_window_report(report: WindowReport, fresh: Fresh, out: TextIO | None =
 
 
 def _gate_name(stage2: str) -> str:
-    return "default" if stage2 == "v2" else "legacy"
+    return {"v2": "default", "v3": "opt-in"}.get(stage2, "legacy")
 
 
 def _counts(attacks: Sequence[Attack]) -> list[tuple[str, int]]:

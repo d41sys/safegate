@@ -357,7 +357,7 @@ def test_legacy_stage2_stays_selectable_and_unchanged() -> None:
 
 def test_detector_rejects_unknown_mode_and_model_with_legacy() -> None:
     with pytest.raises(ValueError):
-        InjectionDetector(stage2="v3")
+        InjectionDetector(stage2="v9")
     with pytest.raises(ValueError):
         InjectionDetector(stage2="legacy", model=_constant_model(0.5, 0.4, 0.6))
 

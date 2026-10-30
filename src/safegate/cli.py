@@ -61,7 +61,9 @@ from safegate.external import (
     shorten,
 )
 from safegate.gate import BLOCKING_ACTIONS, SafetyGate
-from safegate.injection import DEFAULT_STAGE2, STAGE2_MODES, InjectionDetector
+from safegate.indirect_eval import ARTIFACT as INDIRECT_ARTIFACT
+from safegate.indirect_eval import load_train_data, print_report, run_eval, train_v3
+from safegate.injection import COMPARED_MODES, DEFAULT_STAGE2, STAGE2_MODES, InjectionDetector
 from safegate.llm import (
     DEFAULT_CACHE_DIR,
     MODEL,
@@ -493,6 +495,21 @@ def cmd_stage2_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_indirect_train(args: argparse.Namespace) -> int:
+    """Leak-check, select a candidate on dev data and fit the opt-in v3 stage 2 (downloads)."""
+    data = load_train_data(args.cache_dir)
+    train_v3(data, args.out, sys.stdout)
+    return 0
+
+
+def cmd_indirect_eval(args: argparse.Namespace) -> int:
+    """Before/after table of shipped v2 and v3 on BIPIA, NotInject and WildGuard (cached data)."""
+    fresh = load_for_cli(args.cache_dir)
+    data = None if args.no_sanity else load_train_data(args.cache_dir)
+    print_report(run_eval(fresh, data), sys.stdout)
+    return 0
+
+
 def cmd_stage2_train(args: argparse.Namespace) -> int:
     """Fit the shipped pooled v2 model (bundled + all four TRAIN splits) and save it."""
     bundled = _load_bundled_samples()
@@ -747,7 +764,7 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     """Score the gate on public sets next to published guards (``docs/protocol-sota.md``)."""
     if args.guard:
         return _benchmark_guard(args)
-    stages = tuple(STAGE2_MODES) if args.stage2 == "both" else (args.stage2,)
+    stages = COMPARED_MODES if args.stage2 == "both" else (args.stage2,)
     suites, public = resolve_suites(args.suite)
     if suites:
         fresh = load_for_cli(args.cache_dir, args.refresh)
@@ -965,7 +982,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--stage2",
         choices=STAGE2_MODES,
         default=DEFAULT_STAGE2,
-        help="stage-2 model: v2 (default; pooled, calibrated, abstain band) or legacy",
+        help="stage-2 model: v2 (default; pooled, calibrated, abstain band), legacy, or the "
+        "opt-in v3 (v2 plus indirect-injection rows)",
     )
 
     defence_opt = argparse.ArgumentParser(add_help=False)
@@ -1045,6 +1063,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_trn.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
     p_trn.add_argument("--out", default="src/safegate/data/stage2_v2.npz")
     p_trn.set_defaults(func=cmd_stage2_train)
+
+    p_ind = sub.add_parser(
+        "indirect-train",
+        help="Fit the opt-in v3 stage 2 on v2's rows plus indirect-injection rows "
+        "(docs/protocol-indirect.md; needs data)",
+    )
+    p_ind.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
+    p_ind.add_argument("--out", default=INDIRECT_ARTIFACT)
+    p_ind.set_defaults(func=cmd_indirect_train)
+
+    p_ind_eval = sub.add_parser(
+        "indirect-eval",
+        help="Before/after table of v2 and v3 on BIPIA, NotInject and WildGuard benign "
+        "with paired bootstrap and the adoption verdict (docs/protocol-indirect.md)",
+    )
+    p_ind_eval.add_argument("--cache-dir", default="data/raw", help="download cache (gitignored)")
+    p_ind_eval.add_argument(
+        "--no-sanity",
+        action="store_true",
+        help="skip the sanity rows (they need the training caches)",
+    )
+    p_ind_eval.set_defaults(func=cmd_indirect_eval)
 
     p_lodo = sub.add_parser(
         "lodo-report",
