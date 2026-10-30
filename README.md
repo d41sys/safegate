@@ -135,8 +135,8 @@ uv run safegate adaptive-eval                         # the adaptive-attack resu
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | NotInject (benign over-defense accuracy) | 94.4% (320/339) | 62.8% | **98.8%** (335/339) [97.0%, 99.5%] | 87.32% | 99.71% | 86.73% | LlamaGuard3 99.71% |
 | WildGuard benign accuracy | 91.1% (885/971) | 73.4% | 90.5% (543/600, seeded subsample) [87.9%, 92.6%] | 76.11% | 95.16% | 84.24% | LlamaGuard3 95.16% |
-| BIPIA injection accuracy | **8.3%** | 64.3% | **17.0%** (22/125; mean of text 20.0% and code 14.0%) | 68.34% | 39.67% | 66.00% | Deepset 84.67% |
-| Mean of the three | 64.6% | 66.9% | 68.8% (65.2% for safegate on the same rows) | 77.3% | 78.2% | 79.0% | GPT-4o 79.0% |
+| BIPIA injection accuracy | **8.3%** | 64.3% | **17.0%** (22/125; mean of text 20.0% and code 14.0%) | 68.34% | 39.67% | 66.00% | Deepset 84.67% (highest accuracy found for BIPIA; PIGuard's F1 0.963 on BIPIA, from the Horizon-Labs card, is a different metric and PIGuard trained on BIPIA, so it is not a ceiling) |
+| Mean of the three | 64.6% | 66.9% | 68.8% (65.2% for safegate on the same rows) | 77.3% | 78.2% | 79.0% | GPT-4o 79.0%, the highest published on this protocol; no newer guard publishes the trio (checked 2026-10-30) |
 
 *Sonnet column: claude-sonnet-5-5 via Anthropic API, 2026-10-29, no logprobs; single samples at the model's default sampling (the API rejects `temperature` for this model); protocol `docs/protocol-llm.md`. 44 of 1,064 replies were API refusals and count as wrong, 40 of them on BIPIA; see "1b" below.*
 
@@ -251,21 +251,25 @@ The PIGuard cascade is the only fix for BIPIA measured in this repo (8.3% to 49.
 
 ### 2. Nine further public sets (PromptShield, deepset, jackhhao, xTRam1, S-Labs, JailbreakBench, Gandalf, HarmBench, ToxicChat)
 
-Rows are the official test splits at pinned revisions, uncleaned. Ranking score for AUC and TPR@FPR: `2*flagged + detection_score`, ties mid-ranked; gate alone. Intervals are bootstrap or Wilson 95%. "Best published" is the best comparable row of the same metric; the CLI prints all of them with links.
+Rows are the official test splits at pinned revisions, uncleaned. Ranking score for AUC and TPR@FPR: `2*flagged + detection_score`, ties mid-ranked; gate alone. Intervals are bootstrap or Wilson 95%. "Best published" is the highest comparable row of the same metric that the CLI prints with a link, as of 2026-10-30; it is not independently verified. † marks vendor-run figures and ‡ marks guards trained on the set (notes under the table).
 
 | Set (metric) | Safegate v2 (default) | Safegate legacy | Best published, same protocol | Result |
 | --- | --- | --- | --- | --- |
 | PromptShield test, 23,516 rows (AUC) | 0.748 [0.742, 0.754] | 0.664 | PromptShield Llama 0.998; DeBERTa 0.976; PromptGuard v1 0.874; InjecGuard 0.765; Fmops 0.754; ProtectAI v2 0.705 | beats ProtectAI v1 and v2 (0.646, 0.705), ties Fmops, loses to the rest |
 | PromptShield, TPR at 1% FPR | 20.21% | 20.32% | InjecGuard 20.37%; PromptShield Llama 94.80% | ties InjecGuard, loses by 75 points to the purpose-built model |
 | PromptShield, TPR at 0.5% / 0.1% / 0.05% FPR (strict) | 0.00% | 0.00% | PromptShield models 87.8 / 65.3 / 47.5 | loses. 1,311 attacks and 86 benign prompts share the top stage-1 regex score, so the gate has no threshold between 0.1% and 0.5% FPR: 0.00% under the strict rule fixed before scoring; 20.2% (achieved FPR 0.58%) under the paper's 25%-tolerance rule, a row added after scoring and marked as such |
-| deepset test, 116 rows (F1) | 0.462 [0.329, 0.597], precision 1.0, recall 0.30 | 0.558 | pangolin 0.868, Sentinel 0.857, PIGuard 0.800, ProtectAI v2 0.537, Prompt Guard 2 86M 0.235 | loses to pangolin, Sentinel and PIGuard; beats Prompt Guard 2 86M (0.235) on the default gate; inconclusive against ProtectAI v2 |
-| jackhhao balanced test, 262 rows (F1) | 0.921 [0.887, 0.951]; 0.835 on the 163 rows outside its training data | 0.679 | Prompt Guard 2 86M 0.967, PIGuard 0.957, ProtectAI v2 0.911 | loses to Prompt Guard 2 and PIGuard, inconclusive against ProtectAI v2; 99/262 rows are in our training data, so the 0.921 is optimistic |
-| xTRam1 test, 2,060 rows (AUC) | 0.739 | 0.845 | bastion 0.998, Sentinel 0.988, Prompt Guard 2 86M 0.973, 22M 0.893 | loses to all; the v2 gate scores below legacy here (110 rows are in its training data) |
-| S-Labs test, 2,101 rows (AUC) | 0.823 [0.805, 0.840] | 0.869 | bastion 0.996, Sentinel 0.944, Prompt Guard 2 86M 0.922, fmops 0.907, 22M 0.772 | beats Prompt Guard 2 22M (0.772) on both gates; loses to everything else |
+| deepset test, 116 rows (F1) | 0.462 [0.329, 0.597], precision 1.0, recall 0.30 | 0.558 | pangolin 0.868, Sentinel 0.857†, PIGuard 0.800, ProtectAI v2 0.537, Prompt Guard 2 86M 0.235 | loses to pangolin, Sentinel and PIGuard; beats Prompt Guard 2 86M (0.235) on the default gate; inconclusive against ProtectAI v2. Not a ceiling: deepset's own model scores 0.992 on the Horizon-Labs card because it was trained on this set |
+| jackhhao balanced test, 262 rows (F1) | 0.921 [0.887, 0.951]; 0.835 on the 163 rows outside its training data | 0.679 | Prompt Guard 2 86M 0.967, PIGuard 0.957, ProtectAI v2 0.911 | loses to Prompt Guard 2 and PIGuard, inconclusive against ProtectAI v2; 99/262 rows are in our training data, so the 0.921 is optimistic; PIGuard trained on jackhhao TRAIN‡ |
+| xTRam1 test, 2,060 rows (AUC) | 0.739 | 0.845 | bastion 0.998†, Sentinel 0.988†, wolf-defender 0.996†, Prompt Guard 2 86M 0.973, 22M 0.893 | loses to all; the v2 gate scores below legacy here (110 rows are in its training data) |
+| S-Labs test, 2,101 rows (AUC) | 0.823 [0.805, 0.840] | 0.869 | bastion 0.996†, Sentinel 0.944†, Prompt Guard 2 86M 0.922, fmops 0.907, 22M 0.772 | beats Prompt Guard 2 22M (0.772) on both gates; loses to everything else |
 | Gandalf ignore-instructions test, 112 attacks (recall only) | 86.6% (97/112) | 99.1% | ProtectAI v2 100%, Sentinel 100%, Prompt Guard 2 86M 97.3%, PIGuard 95.5% | legacy ties the top; recall rewards flagging everything and says nothing about false positives |
-| JailbreakBench Behaviors, 200 rows (AUC) | 0.491 | 0.419 | bastion 0.986, Sentinel 0.893, Prompt Guard 2 86M 0.754 | chance level: harm requests, outside what safegate is built for |
+| JailbreakBench Behaviors, 200 rows (AUC) | 0.491 | 0.419 | bastion 0.986†, Sentinel 0.893†, Prompt Guard 2 86M 0.754 | chance level: harm requests, outside what safegate is built for |
 | HarmBench, 239 rows (F1) | 0.000 (0/239) | 0.340 | WildGuard 98.9, Llama Guard 3 about 99, Llama Guard 4 97.2, ShieldGemma-9B 60.6 | loses; scope, not a bug: the gate detects injection, not harm |
 | ToxicChat test, 2,853 rows (F1) | 0.301 [0.252, 0.346] | 0.205 | Qwen3Guard 82.8, GuardReasoner-8B 78.8, WildGuard 70.8, Llama Guard 3 about 53, OpenAI Moderation 25.4 | loses to every harm guard; inconclusive against OpenAI Moderation |
+
+† Vendor-run: bastion, wolf-defender and Sentinel figures on xTRam1, S-Labs and JailbreakBench come from the bastion-soft leaderboard JSON (generated 2026-07-03, run by the bastion vendor, split fixed by them) and, for Sentinel on deepset, from the vendor's own paper. They are the highest figures traced, not independently reproduced, so read "loses to all" as "loses to the vendors' own claims". The PromptShield rows are not re-verified here.
+
+‡ Trained on the set: deepset's own model on deepset (F1 0.992), PIGuard on BIPIA (F1 0.963) and on deepset, jackhhao and xTRam1 TRAIN, ProtectAI v2 on xTRam1. None of these is a held-out ceiling and none is used as one; arXiv 2610.03448 (2 Oct 2026) shows PIGuard's BIPIA score is inflated by train/test overlap.
 
 What the table says in plain terms:
 

@@ -61,6 +61,18 @@ means the authors of the system ran the evaluation.
    Mozilla.ai, Bastion) agree with each other to three decimals where their rows are the same
    (for example Prompt Guard 2 86M on deepset: 0.235 in both Horizon and Mozilla), but all three
    have a stake or use a private harness; see the caveat list printed by `safegate benchmark`.
+4. Horizon-Labs datapoint (vendor-run, different protocol, read 2026-10-30; models created
+   2026-09-23; [card](https://huggingface.co/Horizon-Labs/prompt-injection-guard-large)). Their
+   own harness, default threshold, NotInject accuracy: Prompt Guard 2 22M 0.994, Horizon small
+   0.962, Prompt Guard 2 86M 0.953, Horizon base 0.944, Horizon large 0.932, PIGuard 0.885. It
+   does not exceed the 99.71 that Llama Guard 3 reaches under the InjecGuard protocol, and it is
+   not averaged into any row. The same card prints deepset's own model at F1 0.992 on deepset
+   and PIGuard at F1 0.963 on BIPIA; both guards were trained on those sets, so neither is a
+   ceiling (arXiv 2610.03448 shows the BIPIA overlap for PIGuard).
+5. The Sentinel v2 model card is gated and was not read; only the Sentinel v1 paper
+   (arXiv 2506.05446) and the bastion leaderboard JSON (vendor-run, generated 2026-07-03) are
+   the sources for the Sentinel figures in the README. No newer guard was found that publishes the
+   InjecGuard trio (NotInject, WildGuard benign, BIPIA) under the same metric.
 
 ## 2. System-level defences
 
