@@ -1,0 +1,12 @@
+{
+  "model": "leolee99/PIGuard",
+  "revision": "dd78b24e330193a22d2293ac66922dd4f982f563",
+  "head": "cls-linear",
+  "max_length": 512,
+  "flag_threshold": 0.5,
+  "texts_cached": 32660,
+  "texts_scored_in_last_run": 32660,
+  "torch": "2.15.0",
+  "transformers": "5.22.0",
+  "device": "mps"
+}

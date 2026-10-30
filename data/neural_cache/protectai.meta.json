@@ -1,0 +1,12 @@
+{
+  "model": "protectai/deberta-v3-base-prompt-injection-v2",
+  "revision": "90c9989b1a342275dd0d1a95aad283c04e075671",
+  "head": "deberta",
+  "max_length": 512,
+  "flag_threshold": 0.5,
+  "texts_cached": 32660,
+  "texts_scored_in_last_run": 32660,
+  "torch": "2.15.0",
+  "transformers": "5.22.0",
+  "device": "mps"
+}

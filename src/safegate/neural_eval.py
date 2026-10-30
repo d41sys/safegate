@@ -508,6 +508,7 @@ def _print_trio(
     ev: Evaluation, trio: list[str], lat: dict[str, Any] | None, device: str, out: TextIO
 ) -> None:
     w = _writer(out)
+    trio = [k for k in ("notinject", "wildguard", "bipia") if k in trio]  # the paper's order
     w("## The InjecGuard trio (accuracy; NotInject and WildGuard benign, BIPIA attacks)\n")
     names = [r.name for r in ev.runs[trio[0]]]
     w(

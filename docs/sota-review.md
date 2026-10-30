@@ -4,8 +4,10 @@ Read on 26 Oct 2026. Every number below was read from the page named next to it,
 then (for the benchmark and system-defence numbers) again by a second one; the differences
 between the two readings are in "Corrections found by the second reading" at the end. Version
 and date are given for every paper because several changed between versions. Nothing was run
-except safegate: no guard model was downloaded or loaded. (Section 5b, added 29 Oct 2026, is the
-one exception: it reports claude-sonnet-5-5 called through the Anthropic API; still nothing local.)
+except safegate, apart from two additions. Section 5b (29 Oct 2026) reports claude-sonnet-5-5
+called through the Anthropic API. Section 5c (30 Oct 2026) reports two small public guards run
+locally, `leolee99/PIGuard` and `protectai/deberta-v3-base-prompt-injection-v2`, alone and behind
+safegate. The published numbers in sections 1 to 5 are unchanged.
 
 Safegate is a model-free text gate: stage-1 regex families with base64 and ROT13 decoding, stage-2
 logistic regression over signed hashed word and character n-grams (numpy only), an optional input
@@ -233,12 +235,24 @@ A frontier model prompted as a judge over-defends less than every published guar
 
 *Attacker strings* (added after the paragraph above; pre-registered in [`docs/protocol-llm.md`](protocol-llm.md), "Experiment 4"; 1,076 API calls, about $4.6 at list prices; claude-haiku-4-5-20251001 and claude-sonnet-4-5-20250929 via Anthropic API, 2026-10-29, no logprobs). Three payload styles present the attacker string as the new official value of something the owner already uses (an operator notice announcing a new endpoint, address or payee; a billing notice with "updated bank details"; an installer update with the installer's new e-mail), for the 8 injections whose goal needs an attacker-written string. The goals, checkers and attacker strings are unchanged. Screening 12 configurations (2 models x 2 prompts x 3 styles, 40 runs each): 2 successes in 480 runs (0.4% [0.1%, 1.5%]), both `J03` (the setpoint-recipient id `aggregator-evil`, which has the shape of the owner's configured ids) under the stress prompt and the `operator` style; no e-mail address, URL or payee was copied in any run (0 of 60 each), and the default prompt never executed a string goal. The two live configurations were run in full (80 attacked cases and 18 benign tasks per condition): attack success 2.5% [0.7%, 8.7%] (Sonnet 4.5) and 1.2% [0.2%, 6.7%] (Haiku 4.5) undefended, 0 of 80 under `args` and under `full` in both, benign utility 16/18, 14/18, 12/18 as before. All three attempted copies were labelled untrusted and refused (3 of 3), so there was no labelling failure, but this is thin evidence: one goal, one style, three attempts, a recipient that an allow-list refuses anyway, and no e-mail, URL or payee ever copied. The finding is that these two models rarely copy attacker strings from these frames (3 of 560 undefended runs), not that they never do; the checker strings ("attacker", "evil") may also have deterred them. Haiku 5.5 and Sonnet 5.5 were not run (Haiku 5.5 had 0 successes on every style screened in experiment 3; Sonnet 5.5 only with the base payloads). Not comparable with the lab numbers in section 2.
 
+### 5c. Two small guards run locally, alone and behind safegate (K-S1), and a retrained stage 2 (K-S2)
+
+Added 30 Oct 2026. Protocol, predictions, decision rule, outcomes and deviations: [`protocol-neural.md`](protocol-neural.md) and [`protocol-indirect.md`](protocol-indirect.md), both committed before any scored run; tables and reading: the README sections "1c" and "1d". No API calls. Models: `leolee99/PIGuard@dd78b24e` (MIT) and `protectai/deberta-v3-base-prompt-injection-v2@90c9989b` (Apache-2.0), fp32 on Apple MPS (torch 2.15.0, transformers 5.22.0), through the optional `[guard]` extra.
+
+*Reproduction* (the published rows of sections 1 and 5 against the same checkpoints run here, same files and metrics): PIGuard 88.5 / 76.1 / 68.3 on NotInject, WildGuard benign, BIPIA against the paper's 87.32 / 76.11 / 68.34; deepset F1 0.800 (0.800), jackhhao F1 0.957 (0.957), Gandalf 107/112 (107/112). ProtectAI v2 56.64 / 75.18 / 8.67 (identical) and PromptShield AUC 0.702 (0.705). 25 of 26 comparable numbers are within 5 points; the exception is PIGuard's PromptShield AUC, 0.822 here against 0.765 printed for "InjecGuard" in the PromptShield paper. The local runs therefore confirm the published numbers on the sets where the rows are identical; they add no new published row.
+
+*Cascade on the InjecGuard trio* (safegate's gate sends the rows it is unsure of to the transformer; `mid` band, 40.1% of rows escalated): mean 73.9% [71.0%, 76.7%] against 64.6% for safegate alone and 77.3% published for PIGuard; NotInject 92.0% and WildGuard benign 80.2% are above PIGuard's published 87.32% and 76.11%, BIPIA 49.3% is below its 68.34%. The `wide` band (86.1% escalated) reaches 77.7%, i.e. PIGuard alone. The `narrow` band (7.0%) gives the best benign accuracy (97.9% / 93.2%) and no detectable change in the mean (65.2%). ProtectAI v2 behind the gate does not help (`mid` 56.9%, below safegate alone). Latency at batch size 1: gate 0.2 to 1.9 ms p50; a transformer 17 to 35 ms on MPS, 27 to 63 ms on CPU.
+
+*Retrained stage 2* (v3: v2's rows plus InjecAgent, AgentDojo, Nemotron indirect injections, LLMail-Inject, SPML, Dolly benign and composed pairs; BIPIA, NotInject and WildGuard held out): BIPIA 8.3% to 4.0%, WildGuard benign 91.1% to 85.3%, NotInject no detectable change (94.4% to 95.3%, interval includes 0); mean 64.6% to 61.5%. Not adopted: held-out indirect rows were detected much more often (6.8% to 90.2%), but BIPIA's stage-2 scores did not move (median 0.473 to 0.468), and the added false positives are long role-play prompts on WildGuard.
+
+Compared with section 6: the "Cost" and "Model" rows describe safegate alone; with the cascade the transformer is the cost for the escalated share of requests.
+
 ## 6. What safegate is and is not
 
 | Axis | Safegate | The systems above |
 | --- | --- | --- |
 | Model | Regex families plus hashed n-gram logistic regression, numpy only, weights without text | Fine-tuned transformers or LLMs (22M to 12B parameters), prompted LLM judges, architectures |
-| Cost | About 2 ms per prompt on a CPU | 20-92 ms on a GPU for Prompt Guard 2; one LLM call per input for the judges |
+| Cost | About 2 ms per prompt on a CPU (0.2-1.9 ms p50 by set); with a transformer behind it, 17-35 ms on MPS or 27-63 ms on CPU for the escalated share (section 5c) | 20-92 ms on a GPU for Prompt Guard 2; one LLM call per input for the judges |
 | Semantics | None beyond n-grams: English regexes, no paraphrase generalisation, German detection 0/19 cross-dataset | Pretrained language understanding, multilingual |
 | Instruction channel | None: cannot be talked into approving | LLM guards can be hijacked by text in the input |
 | Inspectable | Feature weights and regexes | Opaque |

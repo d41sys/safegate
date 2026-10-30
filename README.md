@@ -1,6 +1,6 @@
 # safegate
 
-A safety gate for LLM apps. It checks every prompt before the model sees it, and checks every streamed token before the user sees it. Offline by default: numpy + PyYAML, no model downloads. Only `safegate external-eval`, `stage2-report`, `stage2-train` and `lodo-report` touch the network (they download public datasets, stdlib only), and `tool-eval --agent`, `benchmark --guard` and `guard-dev` call the Anthropic API when their cache lacks a request (stdlib `urllib`, key from `ANTHROPIC_API_KEY`, every reply cached in `data/llm_cache/` and committed, so scoring replays offline with `--llm-offline`).
+A safety gate for LLM apps. It checks every prompt before the model sees it, and checks every streamed token before the user sees it. Offline by default: numpy + PyYAML, no model downloads (the optional `[guard]` extra loads two public transformer guards for `safegate neural-eval`, section 1c of the SOTA comparison). Only `safegate external-eval`, `stage2-report`, `stage2-train` and `lodo-report` touch the network (they download public datasets, stdlib only), and `tool-eval --agent`, `benchmark --guard` and `guard-dev` call the Anthropic API when their cache lacks a request (stdlib `urllib`, key from `ANTHROPIC_API_KEY`, every reply cached in `data/llm_cache/` and committed, so scoring replays offline with `--llm-offline`).
 
 Covers lessons 82–87 of *AI Engineering from Scratch*: jailbreak taxonomy, prompt-injection detection, refusal evaluation, content classification, a constitutional rules engine, and an end-to-end gate.
 
@@ -92,6 +92,8 @@ uv run safegate stage2-train   # rebuild src/safegate/data/stage2_v2.npz from th
 uv run safegate adaptive-eval  # rule-based adaptive attacker on the public TEST splits (cached data/raw, no network)
 uv run safegate check --defence shipped "Ignore all previous instructions"   # the input defence in front of the gate (also on run, redteam, refusal-eval, external-eval; --windows SIZE:STRIDE:THRESHOLD adds windows)
 uv run safegate benchmark     # the InjecGuard paper's public sets next to published guards (downloads pinned revisions once); `--suite all` adds nine more sets, see "Comparison with SOTA"
+uv sync --extra guard && uv run safegate neural-eval --suite all --offline   # PIGuard / ProtectAI v2 alone and behind the gate on twelve sets, replayed from the committed data/neural_cache/ (no model load); without --offline it loads the two models (optional [guard] extra: torch, transformers; about 40 minutes on Apple MPS for everything)
+uv run safegate indirect-eval   # the opt-in --stage2 v3 (indirect-injection rows) against v2, BIPIA held out; needs data/raw
 uv run safegate window-eval   # windows 150:37:0 on fresh data, with the rule fixed in docs/protocol-window-150.md
 uv run safegate spec-check examples/spec/genuine.json --policy examples/spec/policy.yaml
 uv run safegate tool-check examples/tools/call_email_cap.json --policy examples/tools/energy.yaml   # refuse, exit 1
@@ -116,9 +118,9 @@ print("".join(safe_llm("tell me about heat pumps")))
 
 ## Comparison with SOTA
 
-**Verdict first: safegate is not competitive with fine-tuned guards on detection. Its advantages are false positives on benign text, cost and inspectability.** Across the twelve public sets scored here (three from the InjecGuard paper, nine further ones) it beats only the weakest published guards: ProtectAI v1 and v2 on PromptShield AUC, Prompt Guard 2 86M on deepset and Prompt Guard 2 22M on S-Labs. It ties InjecGuard at 1% FPR on PromptShield. It loses to PIGuard, Prompt Guard 2 86M, Sentinel and the fine-tuned PromptShield models on most other sets, and by a wide margin at low false-positive rates. It is a 2 ms, model-free, inspectable pre-filter, not a replacement for a fine-tuned guard.
+**Verdict first: safegate is not competitive with fine-tuned guards on detection. Its advantages are false positives on benign text, cost and inspectability.** Across the twelve public sets scored here (three from the InjecGuard paper, nine further ones) it beats only the weakest published guards: ProtectAI v1 and v2 on PromptShield AUC, Prompt Guard 2 86M on deepset and Prompt Guard 2 22M on S-Labs. It ties InjecGuard at 1% FPR on PromptShield. It loses to PIGuard, Prompt Guard 2 86M, Sentinel and the fine-tuned PromptShield models on most other sets, and by a wide margin at low false-positive rates. It is a 2 ms, model-free, inspectable pre-filter, not a replacement for a fine-tuned guard. Phase K (30 Oct 2026) measured the obvious fix, a small transformer behind the gate: PIGuard as an escalation stage recovers 9.3 of the 12.7 points between safegate and PIGuard's published mean on the InjecGuard trio (73.9% against 77.3%, 95% interval [71.0%, 76.7%]) and sends 40% of the trio rows to a 20-35 ms model (section 1c). Retraining the classical stage 2 on indirect-injection data did not help (section 1d).
 
-The protocol was committed before any score ([`docs/protocol-sota.md`](docs/protocol-sota.md), commit `3a722ef`). The 2023-2026 literature (detectors, system defences, adaptive attacks, benchmarks) with every source and version is in [`docs/sota-review.md`](docs/sota-review.md). No guard model was downloaded or run locally: published numbers only, from pages opened and cited in the CLI output, and a published row is printed next to ours only if the set, split, metric and cutoff are identical. Everything else is printed in a separate "not comparable" table with the reason. The one model that was run is claude-sonnet-5-5, through the Anthropic API, as a zero-shot guard on the three InjecGuard sets (section 1b; protocol [`docs/protocol-llm.md`](docs/protocol-llm.md)).
+The protocol was committed before any score ([`docs/protocol-sota.md`](docs/protocol-sota.md), commit `3a722ef`). The 2023-2026 literature (detectors, system defences, adaptive attacks, benchmarks) with every source and version is in [`docs/sota-review.md`](docs/sota-review.md). Published numbers come only from pages opened and cited in the CLI output, and a published row is printed next to ours only if the set, split, metric and cutoff are identical. Everything else is printed in a separate "not comparable" table with the reason. Models were run here in two ways: claude-sonnet-5-5, through the Anthropic API, as a zero-shot guard on the three InjecGuard sets (section 1b; protocol [`docs/protocol-llm.md`](docs/protocol-llm.md)); and, since 30 Oct 2026, two public transformer guards locally, PIGuard and ProtectAI v2, alone and as a second stage behind safegate on all twelve sets (section 1c; protocol [`docs/protocol-neural.md`](docs/protocol-neural.md); optional `[guard]` extra, no API).
 
 ```bash
 uv run safegate benchmark --suite all --stage2 both   # everything below: about 6 minutes, downloads pinned revisions once (under 300 MB) into data/raw/
@@ -167,6 +169,66 @@ What it costs, measured from the cache (336 input and 37 output tokens per reque
 Reading: behind the pre-filter the model removes the gate's false positives for about a tenth of the cost (NotInject 94.4% to 99.7%, WildGuard 92.8% to 96.8-97.5%, at $0.04 to $0.16 per 1,000 requests of that traffic) and makes BIPIA worse (8.3% to 1.7% and 1.0%), because the few BIPIA prompts the gate did flag are then overruled by the model's `benign` or refusal. The mean barely moves (+0.9 points) while the model alone gains 3.6 points for ten times the cost, so by the rule fixed in the protocol the combination is **not** worth its cost on this mix of sets: what it buys is fewer false positives on benign traffic, not more detection. A deployment whose traffic is mostly benign and whose pre-filter already catches the attacks it cares about would still take A for $0.11 per 1,000 requests; one that cares about BIPIA-style indirect injection should not use either.
 
 Limits: single samples at the model's default sampling (no `temperature`), so a rerun can differ; BIPIA, NotInject and WildGuard are public and may be in the model's training data; the cleaning against the four training datasets was not repeated (the row counts equal those of the committed rows, so it removed nothing there); the prompt was never tuned on the sets, and a prompt written for indirect injection could do better on BIPIA, which this run does not show.
+
+### 1c. A small transformer as stage 2 behind the gate (PIGuard, ProtectAI v2; local, 30 Oct 2026, no API)
+
+Protocol, bands, predictions and decision rule: [`docs/protocol-neural.md`](docs/protocol-neural.md), committed with the band derivation (commit `7d7fdc4`) before any scored run; full output and the predictions-against-outcomes table are in the same file. Models: `leolee99/PIGuard@dd78b24e` (MIT) and `protectai/deberta-v3-base-prompt-injection-v2@90c9989b` (Apache-2.0), fp32, Apple MPS, torch 2.15.0, transformers 5.22.0, 512-token truncation, flagged at P(injection) at least 0.5. The weights live in the Hugging Face cache (1.4 GB for both); probabilities for all 32,660 scored texts are committed in `data/neural_cache/`, so the tables replay without the models. **0 API calls, $0.**
+
+**Cascade.** The gate's `refuse` is a flag without the model. A row the gate sends to `escalate`, or any row whose detection score is at least `lo`, goes to the transformer, which decides at 0.5. Everything else passes as benign. Three bands, `lo` derived on the shipped training rows only (out-of-fold scores of the pooled training set; `src/safegate/data/neural_bands.json`): `narrow` (the gate's own abstain band, 10% of benign training rows), `mid` (30%, the primary band), `wide` (60%). Gate alone, no defence, no windows.
+
+**Reproduction first.** Both checkpoints reproduce the published numbers: PIGuard 88.5 / 76.1 / 68.3 on the trio against 87.32 / 76.11 / 68.34, deepset F1 0.800 (published 0.800), jackhhao F1 0.957 (0.957), Gandalf 107/112 (published 107/112); ProtectAI v2 56.64 / 75.18 / 8.67 on the trio (identical to the paper). 25 of 26 comparable published numbers are within 5 points. The exception is PIGuard's PromptShield AUC, 0.822 against 0.765 for "InjecGuard" in the PromptShield paper (its TPR at 1%, 0.5%, 0.1% and 0.05% FPR are within 2.5 points); I did not test whether the paper's model is an earlier checkpoint.
+
+| System (InjecGuard trio, accuracy) | NotInject | WildGuard benign | BIPIA | Mean [95% CI] | Rows escalated | Latency p50 / p95 ms (MPS; CPU) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Safegate alone (default gate) | 94.4% | 91.1% | 8.3% | 64.6% [62.9%, 66.7%] | 0% | 0.3 / 0.5; 1.3 / 3.5; 0.3 / 1.1 |
+| **PIGuard, published** | 87.32% | 76.11% | 68.34% | 77.3% | n/a | n/a |
+| PIGuard alone, this run | 88.5% | 76.1% | 68.3% | 77.6% [75.2%, 80.0%] | 100% | 20.0 / 23.2; 24.6 / 52.4; 22.3 / 310.6 (CPU 32.2 / 39.3; 51.7 / 87.5; 28.7 / 49.6) |
+| Cascade, PIGuard `narrow` | **97.9%** | **93.2%** | 4.3% | 65.2% [63.8%, 66.7%] | 7.0% | 0.3 / 0.7; 1.3 / 35.1; 0.3 / 18.8 |
+| **Cascade, PIGuard `mid`** | 92.0% | 80.2% | 49.3% | **73.9%** [71.0%, 76.7%] | 40.1% | 0.3 / 22.0; 2.4 / 55.0; 19.2 / 106.3 (CPU 0.3 / 35.2; 2.4 / 84.2; 27.3 / 50.4) |
+| Cascade, PIGuard `wide` | 88.8% | 76.0% | 68.3% | 77.7% [75.2%, 80.1%] | 86.1% | 20.1 / 23.1; 23.4 / 55.0; 22.3 / 310.8 |
+| ProtectAI v2 alone | 56.6% | 75.2% | 8.7% | 46.8% [44.4%, 49.2%] | 100% | 20.6 / 23.7; 27.5 / 52.1; 24.1 / 32.3 |
+| Cascade, ProtectAI `narrow` / `mid` / `wide` | 95.6 / 82.3 / 58.4% | 93.5 / 80.3 / 74.7% | 3.3 / 8.0 / 8.7% | 64.1 / 56.9 / 47.2% | 7.0 / 40.1 / 86.1% | as above |
+
+Latency columns are NotInject; WildGuard; BIPIA, single request, 200 seeded rows per set (125 for BIPIA), after warm-up; the MPS p95 on BIPIA includes first-call kernel compilation for sequence lengths the GPU had not seen (the CPU figure is the stable one). The BIPIA mean is the mean of text and code accuracy, as in the paper; pooled over its 125 rows PIGuard alone flags 62.4% and the `mid` cascade 44.0%.
+
+**Decision rule (fixed in the protocol):**
+
+* **`mid` closes part of the gap, not all of it.** The interval [71.0%, 76.7%] lies above safegate alone's [62.9%, 66.7%], so the gain is real. It falls short of 77.3% and it escalates 40.1% of the rows (the rule needed at most 35% to say "closes the gap"). It beats the published PIGuard on NotInject (92.0% against 87.32%) and WildGuard (80.2% against 76.11%) and loses BIPIA by 19 points. A cascade cannot flag what the gate passes below `lo`: that is the 18 points of BIPIA attacks missing from 44.0% against 62.4%.
+* `wide` reaches 77.7% but escalates 86.1% of the rows, so it is PIGuard alone with a skipped 14%, and fails the cost clause.
+* `narrow` has **no detectable effect** on the mean (65.2% against 64.6%, intervals overlap) but is the best result on both benign columns, above safegate alone and above PIGuard alone, for 7% of the traffic. It loses to PIGuard alone on the mean (intervals disjoint).
+* **ProtectAI v2 is a poor second stage here**: its `mid` cascade (56.9% [54.8%, 58.8%]) is below safegate alone, because it over-defends (56.6% on NotInject) and detects almost no BIPIA (8.7%).
+
+| Further set (metric) | Safegate alone | PIGuard alone | Cascade PIGuard `mid` (escalated) | ProtectAI v2 alone |
+| --- | --- | --- | --- | --- |
+| PromptShield (AUC) | 0.748 | 0.822 | 0.713 (50.1%) | 0.702 |
+| PromptShield (TPR at 1% FPR) | 20.2% | 22.9% | 13.7% | 1.7% |
+| deepset (F1) | 0.462 | 0.800 | 0.652 (33.6%) | 0.537 |
+| jackhhao (F1) | 0.921 | 0.957 | 0.954 (29.0%) | 0.907 |
+| xTRam1 (AUC) | 0.739 | 0.912 | 0.780 (49.4%) | 0.990 |
+| S-Labs (AUC) | 0.823 | 0.902 | 0.756 (33.7%) | 0.977 |
+| JailbreakBench (AUC) | 0.491 | 0.644 | 0.522 (8.5%) | 0.557 |
+| Gandalf test (recall) | 86.6% | 95.5% | 95.5% (53.6%) | 100% |
+| HarmBench (recall) | 0.0% | 24.7% | 8.4% (14.2%) | 0.0% |
+| ToxicChat (F1) | 0.301 | 0.369 | 0.359 (34.7%) | 0.239 |
+
+The cascade matches PIGuard alone where it can (`wide`: deepset 0.800, jackhhao 0.954, xTRam1 AUC 0.885) and is otherwise between the two parts. On threshold-free metrics it is **not better than either part**: the cascade mixes the gate's flag with the transformer's probability under a pre-registered ranking rule, so PromptShield AUC is 0.713 to 0.801 across bands against 0.748 and 0.822 for its parts. The other bands, the ProtectAI rows and the p50/p95 of every set are in `docs/protocol-neural.md`.
+
+**What it costs and what it buys.** The gate's p50 is 0.2 to 1.9 ms; a transformer at batch size 1 is 17 to 35 ms at p50 on MPS and 27 to 63 ms on CPU (an M-series GPU barely beats its CPU at this size). The cascade's p50 is the gate's while fewer than half the rows are escalated and its p95 is the transformer's once more than 5% are. For this mix: `narrow` buys benign accuracy for 7% of the traffic; `mid` buys 9 of the 12.7 missing trio points for 40%; the remaining 3.4 points need `wide`, that is, the transformer on nearly all traffic.
+
+### 1d. Retraining the classical stage 2 with indirect-injection data (K-S2; not adopted)
+
+Protocol and predictions: [`docs/protocol-indirect.md`](docs/protocol-indirect.md), committed before any scored run; results and deviations in the same file. The hypothesis: BIPIA is lost (8.3%) because the classical stage 2 never saw indirect injections. A v3 stage 2 was fitted on v2's rows plus InjecAgent (62 attacks, 17 benign), AgentDojo (27, 85), Nemotron indirect injections (1,932, 2,521), LLMail-Inject (597, 160), SPML (12,541, 3,018), Dolly benign (7,547) and 1,000 + 1,000 composed benign-document-plus-instruction pairs; BIPIA, NotInject and WildGuard texts were held out entirely (0 rows equal to any of their texts; 6,013 Dolly rows equal to PromptShield test rows and 274 old v2 TRAIN rows were removed). Three candidate mixes were compared on a separate dev split; the one with composed pairs (cap 300) won on dev (0.682 against 0.664 and 0.668; v2 refit 0.328).
+
+| Gate alone (no defence, no windows) | v2 (default) | v3 | v3 minus v2 [95% paired bootstrap] |
+| --- | --- | --- | --- |
+| BIPIA | 8.3% | 4.0% | −4.3 [−8.7, −0.0] |
+| NotInject | 94.4% | 95.3% | +0.9 [−1.2, +2.9], no detectable effect |
+| WildGuard benign | 91.1% | 85.3% | −5.9 [−7.6, −4.2] |
+| Mean | 64.6% | 61.5% | −3.1 [−4.8, −1.6] |
+
+**v3 is not adopted; it is a loss.** The rule fixed beforehand needed BIPIA up by 5 points with an interval excluding 0 and the other two sets within bounds. BIPIA went down. The dev detection rate on held-out indirect rows rose from 6.8% to 90.2%, but it did not transfer: BIPIA's stage-2 scores barely move (median 0.473 to 0.468, refuse threshold 0.578), and the extra false positives are long role-play prompts on WildGuard (143 flagged, against 86). `--stage2 v3` stays available as an opt-in; the default is still v2 (`safegate indirect-eval` reproduces the table).
+
+The PIGuard cascade is the only fix for BIPIA measured in this repo (8.3% to 49.3% at `mid`); retraining the n-gram model on indirect rows is not.
 
 ### 2. Nine further public sets (PromptShield, deepset, jackhhao, xTRam1, S-Labs, JailbreakBench, Gandalf, HarmBench, ToxicChat)
 
