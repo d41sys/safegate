@@ -18,8 +18,11 @@ refused or escalated to a human.
 
 Limits, by design:
 
-* Text-only attacks are out of scope: a poisoned summary or a phishing link in the reply
-  makes no tool call.
+* Text-only attacks are out of scope of the per-call checks: a poisoned summary or a phishing
+  link in the reply makes no tool call. The opt-in ``egress`` block covers the link case
+  deterministically (``check_egress_text``): every host named in the reply (or in a text
+  argument marked ``scan_hosts``) must be allow-listed or must already appear in the owner's
+  own text. It says nothing about false claims without a link.
 * When the user legitimately routes untrusted data into an argument the policy allows
   (``untrusted: allow``), the gate checks bounds, not truth, as ``spec.py`` does.
 * The Rule of Two is session-wide and coarse. It cannot tell that a state change was
@@ -61,7 +64,8 @@ _RULE_OF_TWO_MODES = ("off", "refuse", "escalate")
 _ARG_TYPES = ("number", "string", "boolean")
 _UNTRUSTED_MODES = ("forbid", "allow")
 
-_ROOT_KEYS = {"version", "on_violation", "rule_of_two", "tools"}
+_ROOT_KEYS = {"version", "on_violation", "rule_of_two", "egress", "tools"}
+_EGRESS_KEYS = {"allowed_hosts", "trust_user_text", "include_tool_hosts", "on_violation"}
 _TOOL_KEYS = {"capability", "description", "result_labels", "args"}
 _ARG_KEYS = {
     "type",
@@ -72,11 +76,30 @@ _ARG_KEYS = {
     "allowed_values",
     "allowed_hosts",
     "allowed_email_domains",
+    "scan_hosts",
 }
 
 _HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
 _EMAIL_RE = re.compile(r"^[^\s@,;<>()\"'\\]+@([A-Za-z0-9.-]+)$")
 _URL_FORBIDDEN_RE = re.compile(r"[\\\s\x00-\x1f\x7f]")
+
+# Hosts named in free text (egress check). A URL with a scheme, an e-mail address, or a bare
+# dotted name such as ``evil.example/verify``. Labels are Unicode on purpose: a look-alike
+# host is found, and is never on an (ASCII) allow-list.
+_URL_CHARS = r"[^\s<>\"'`()\[\]{}|^\\]"
+_TEXT_URL_RE = re.compile(r"\b[a-z][a-z0-9+.\-]*://" + _URL_CHARS + "*", re.IGNORECASE)
+_LABEL = r"[^\W_](?:[\w\-]*[^\W_])?"
+_DOMAIN = rf"(?:{_LABEL}\.)+{_LABEL}"
+_TEXT_EMAIL_RE = re.compile(rf"[\w.+%\-]+@({_DOMAIN})(?![\w\-])", re.IGNORECASE)
+_TEXT_BARE_RE = re.compile(
+    rf"(?<![\w@.\-])({_DOMAIN})(?![\w\-])(?::\d{{1,5}})?(/{_URL_CHARS}*)?", re.IGNORECASE
+)
+# Dotted names that are file names, not hosts (``report.csv``).
+_FILE_SUFFIXES = frozenset(
+    {"csv", "json", "log", "md", "pdf", "png", "jpg", "py", "txt", "xml", "yaml", "yml", "zip"}
+)
+UNPARSEABLE_HOST = "(unparseable)"
+REDACTION = "[link removed]"
 
 
 class ToolPolicyError(ValueError):
@@ -100,6 +123,7 @@ class ArgPolicy:
     allowed_values: tuple[str | float, ...] | None = None
     allowed_hosts: tuple[str, ...] | None = None
     allowed_email_domains: tuple[str, ...] | None = None
+    scan_hosts: bool = False
 
 
 @dataclass(frozen=True)
@@ -119,12 +143,33 @@ class ToolSpec:
 
 
 @dataclass(frozen=True)
+class EgressPolicy:
+    """Output allow-list: which hosts text leaving the agent may name.
+
+    A host named in a reply (or a ``scan_hosts`` argument) is allowed when it is in
+    ``allowed_hosts`` (``*.suffix`` matches subdomains), when it appears in the owner's own
+    text (``trust_user_text``: the user prompt is the trusted provenance) or when a tool's
+    ``allowed_hosts`` lists it (``include_tool_hosts``). ``on_violation`` is the action for a
+    reply that names any other host; the reply is redacted unless a human approves.
+    """
+
+    allowed_hosts: tuple[str, ...] = ()
+    trust_user_text: bool = True
+    include_tool_hosts: bool = True
+    on_violation: str = "refuse"
+
+
+@dataclass(frozen=True)
 class ToolPolicy:
-    """Declared tools plus the action taken on a violation. Tools not listed are refused."""
+    """Declared tools plus the action taken on a violation. Tools not listed are refused.
+
+    ``egress`` is optional: without it replies and text arguments are not scanned for hosts.
+    """
 
     tools: dict[str, ToolSpec]
     on_violation: str = "refuse"
     rule_of_two: str = "escalate"
+    egress: EgressPolicy | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ToolPolicy:
@@ -144,7 +189,15 @@ class ToolPolicy:
         if not isinstance(raw_tools, Mapping) or not raw_tools:
             raise ToolPolicyError("'tools' must be a non-empty mapping")
         tools = {str(n): _parse_tool(str(n), body) for n, body in raw_tools.items()}
-        return cls(tools=tools, on_violation=on_violation, rule_of_two=rule_of_two)
+        egress = _parse_egress(data["egress"]) if "egress" in data else None
+        if egress is None:
+            for tool_name, spec in tools.items():
+                for arg_name, arg in spec.args.items():
+                    if arg.scan_hosts:
+                        raise ToolPolicyError(
+                            f"tools.{tool_name}.args.{arg_name}: scan_hosts needs an egress block"
+                        )
+        return cls(tools=tools, on_violation=on_violation, rule_of_two=rule_of_two, egress=egress)
 
     def label_result(
         self, tool: str, value: Any, arg_labels: Iterable[Iterable[str]] = ()
@@ -236,6 +289,11 @@ def _parse_arg(tool: str, name: str, raw: Any) -> ArgPolicy:
         for d in emails:
             if not _HOST_RE.match(d):
                 raise ToolPolicyError(f"{where}.allowed_email_domains: bad domain {d!r}")
+    scan_hosts = body.get("scan_hosts", False)
+    if not isinstance(scan_hosts, bool):
+        raise ToolPolicyError(f"{where}.scan_hosts must be true or false")
+    if scan_hosts and arg_type != "string":
+        raise ToolPolicyError(f"{where}: scan_hosts needs type string")
     return ArgPolicy(
         type=arg_type,
         required=required,
@@ -245,6 +303,37 @@ def _parse_arg(tool: str, name: str, raw: Any) -> ArgPolicy:
         allowed_values=allowed_values,
         allowed_hosts=hosts,
         allowed_email_domains=emails,
+        scan_hosts=scan_hosts,
+    )
+
+
+def _parse_egress(raw: Any) -> EgressPolicy:
+    where = "egress"
+    body = _mapping(raw, where)
+    _no_unknown(body, _EGRESS_KEYS, where)
+    hosts: list[str] = []
+    raw_hosts = body.get("allowed_hosts", [])
+    if not isinstance(raw_hosts, list):
+        raise ToolPolicyError(f"{where}.allowed_hosts must be a list")
+    if raw_hosts:
+        hosts = list(_string_list(raw_hosts, f"{where}.allowed_hosts"))
+    for h in hosts:
+        if not _HOST_RE.match(h.removeprefix("*.")):
+            raise ToolPolicyError(f"{where}.allowed_hosts: bad host {h!r}")
+    flags: dict[str, bool] = {}
+    for key in ("trust_user_text", "include_tool_hosts"):
+        value = body.get(key, True)
+        if not isinstance(value, bool):
+            raise ToolPolicyError(f"{where}.{key} must be true or false")
+        flags[key] = value
+    on_violation = body.get("on_violation", "refuse")
+    if on_violation not in _VIOLATION_ACTIONS:
+        raise ToolPolicyError(f"{where}.on_violation must be one of {_VIOLATION_ACTIONS}")
+    return EgressPolicy(
+        allowed_hosts=tuple(hosts),
+        trust_user_text=flags["trust_user_text"],
+        include_tool_hosts=flags["include_tool_hosts"],
+        on_violation=on_violation,
     )
 
 
@@ -423,6 +512,128 @@ def _check_email(name: str, value: str, allowed: tuple[str, ...], out: _Violatio
         out.add("tool-arg-domain", f"{name}: domain {match.group(1)!r} is not allowed", name)
 
 
+# --------------------------------------------------------------------------------------
+# Egress: hosts named in text that leaves the agent
+# --------------------------------------------------------------------------------------
+
+
+def _blank(text: str, start: int, end: int) -> str:
+    return text[:start] + " " * (end - start) + text[end:]
+
+
+def _is_ipv4(host: str) -> bool:
+    parts = host.split(".")
+    return len(parts) == 4 and all(p.isascii() and p.isdigit() and len(p) <= 3 for p in parts)
+
+
+def hosts_in_text(text: str) -> list[tuple[int, int, str]]:
+    """Every host the text names, as ``(start, end, host)``; ``host`` is lower-cased.
+
+    Finds URLs with a scheme (host after any ``user@``), e-mail addresses (the domain) and bare
+    dotted names (``evil.example/verify``; file names such as ``report.csv`` are skipped).
+    A scheme URL with no parseable host yields ``UNPARSEABLE_HOST``.
+    """
+    found: list[tuple[int, int, str]] = []
+    work = text
+    for m in _TEXT_URL_RE.finditer(text):
+        end = m.start() + len(m.group().rstrip(".,;:!?"))
+        try:
+            host = urlsplit(text[m.start() : end]).hostname
+        except ValueError:
+            host = None
+        found.append((m.start(), end, host.rstrip(".") if host else UNPARSEABLE_HOST))
+        work = _blank(work, m.start(), end)
+    for m in _TEXT_EMAIL_RE.finditer(work):
+        found.append((m.start(), m.end(), m.group(1).casefold()))
+        work = _blank(work, m.start(), m.end())
+    for m in _TEXT_BARE_RE.finditer(work):
+        host = m.group(1).casefold()
+        suffix = host.rsplit(".", 1)[1]
+        if suffix.isdigit():
+            if not _is_ipv4(host):
+                continue  # a number such as 11.2 or a version string
+        elif len(suffix) < 2 or (suffix in _FILE_SUFFIXES and m.group(2) is None):
+            continue
+        found.append((m.start(), m.start() + len(m.group().rstrip(".,;:!?")), host))
+    return sorted(found)
+
+
+def egress_allowed_hosts(policy: ToolPolicy, trusted_text: Iterable[str] = ()) -> tuple[str, ...]:
+    """The hosts text may name under ``policy.egress``: its own list, the hosts and e-mail
+    domains the tool arguments allow-list, and the hosts in ``trusted_text`` (the owner's own
+    words). Empty without an egress block."""
+    egress = policy.egress
+    if egress is None:
+        return ()
+    allowed = list(egress.allowed_hosts)
+    if egress.include_tool_hosts:
+        for spec in policy.tools.values():
+            for arg in spec.args.values():
+                allowed += arg.allowed_hosts or ()
+                allowed += arg.allowed_email_domains or ()
+    if egress.trust_user_text:
+        for text in trusted_text:
+            allowed += [h for _, _, h in hosts_in_text(text) if h != UNPARSEABLE_HOST]
+    return tuple(dict.fromkeys(allowed))
+
+
+def _blocked_hosts(text: str, allowed: tuple[str, ...]) -> list[tuple[int, int, str]]:
+    return [
+        (s, e, h)
+        for s, e, h in hosts_in_text(text)
+        if h == UNPARSEABLE_HOST or not _host_ok(h, allowed)
+    ]
+
+
+def check_egress_text(
+    text: str,
+    policy: ToolPolicy,
+    trusted_text: Iterable[str] = (),
+    scope: str = "reply",
+) -> Decision:
+    """Check outgoing text (the final reply) against the egress allow-list.
+
+    ``allow`` when the text names no host outside ``egress_allowed_hosts(policy, trusted_text)``
+    (or when the policy has no egress block); otherwise ``policy.egress.on_violation`` with rule
+    id ``egress-host``. ``metadata["blocked"]`` lists the offending hosts. Deterministic: no
+    labels are consulted, so a mislabeled harness cannot open the gate.
+    """
+    egress = policy.egress
+    if egress is None:
+        return Decision(
+            action="allow", rule_ids=[], reasons=[], metadata={"scope": scope, "enforced": False}
+        )
+    allowed = egress_allowed_hosts(policy, trusted_text)
+    blocked = list(dict.fromkeys(h for _, _, h in _blocked_hosts(text, allowed)))
+    metadata: dict[str, Any] = {
+        "scope": scope,
+        "enforced": True,
+        "allowed_hosts": list(allowed),
+        "blocked": blocked,
+    }
+    if not blocked:
+        return Decision(action="allow", rule_ids=[], reasons=[], metadata=metadata)
+    return Decision(
+        action=egress.on_violation,
+        rule_ids=["egress-host"],
+        reasons=[f"{scope}: host {h!r} is not allow-listed" for h in blocked],
+        category=TOOL_CATEGORY,
+        score=1.0,
+        metadata=metadata,
+    )
+
+
+def redact_egress_text(text: str, policy: ToolPolicy, trusted_text: Iterable[str] = ()) -> str:
+    """``text`` with every URL, address or host outside the allow-list replaced by
+    ``REDACTION``; unchanged without an egress block."""
+    if policy.egress is None:
+        return text
+    out = text
+    for start, end, _ in reversed(_blocked_hosts(text, egress_allowed_hosts(policy, trusted_text))):
+        out = out[:start] + REDACTION + out[end:]
+    return out
+
+
 def _type_ok(value: Any, arg_type: str) -> bool:
     if arg_type == "number":
         return (
@@ -433,7 +644,14 @@ def _type_ok(value: Any, arg_type: str) -> bool:
     return isinstance(value, str)
 
 
-def _check_arg(name: str, value: Any, labels: Labels, policy: ArgPolicy, out: _Violations) -> None:
+def _check_arg(
+    name: str,
+    value: Any,
+    labels: Labels,
+    policy: ArgPolicy,
+    out: _Violations,
+    egress_hosts: tuple[str, ...] | None = None,
+) -> None:
     if not policy.allow_untrusted and is_untrusted(labels):
         bad = sorted(label for label in labels if label.startswith("untrusted:"))
         out.add("tool-arg-untrusted", f"{name}: derives from untrusted input ({bad})", name)
@@ -453,6 +671,11 @@ def _check_arg(name: str, value: Any, labels: Labels, policy: ArgPolicy, out: _V
         _check_url(name, value, policy.allowed_hosts, out)
     if policy.allowed_email_domains is not None:
         _check_email(name, value, policy.allowed_email_domains, out)
+    if policy.scan_hosts and egress_hosts is not None:
+        for _, _, host in _blocked_hosts(value, egress_hosts):
+            out.add(
+                "tool-arg-egress", f"{name}: names host {host!r}, which is not allow-listed", name
+            )
 
 
 def check_tool_call(
@@ -460,6 +683,7 @@ def check_tool_call(
     labels: Mapping[str, Iterable[str]],
     policy: ToolPolicy,
     session: Session | None = None,
+    trusted_text: Iterable[str] = (),
 ) -> Decision:
     """Check one proposed tool call against ``policy``; return a safegate ``Decision``.
 
@@ -473,6 +697,9 @@ def check_tool_call(
 
     ``allow`` when everything holds, otherwise the most severe of ``policy.on_violation`` (per
     argument problems) and ``policy.rule_of_two``. An unknown tool is always refused.
+
+    With an ``egress`` block, arguments marked ``scan_hosts`` must not name a host outside
+    ``egress_allowed_hosts(policy, trusted_text)`` (rule id ``tool-arg-egress``).
     """
     spec = policy.tools.get(call.tool)
     if spec is None:
@@ -486,6 +713,11 @@ def check_tool_call(
         )
 
     out = _Violations()
+    egress_hosts = (
+        egress_allowed_hosts(policy, trusted_text)
+        if policy.egress is not None and any(a.scan_hosts for a in spec.args.values())
+        else None
+    )
     for name in call.args:
         if name not in spec.args:
             out.add("tool-arg-unknown", f"{name}: argument is not declared for {call.tool}", name)
@@ -494,7 +726,7 @@ def check_tool_call(
             if arg_policy.required:
                 out.add("tool-arg-missing", f"{name}: required argument is missing", name)
             continue
-        _check_arg(name, call.args[name], _arg_labels(name, labels), arg_policy, out)
+        _check_arg(name, call.args[name], _arg_labels(name, labels), arg_policy, out, egress_hosts)
 
     actions: list[str] = []
     if out.codes:

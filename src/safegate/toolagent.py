@@ -314,7 +314,7 @@ def run_llm_case(
         payload=render_payload(payload_style, attack) if attack else None,
         vector=task.vector if attack else None,
     )
-    run = _Run(policy, condition, False, env)
+    run = _Run(policy, condition, False, env, trusted_text=(task.prompt,))
     labeler = ArgLabeler(task.prompt)
     messages: list[dict[str, Any]] = [{"role": "user", "content": task.prompt}]
     texts: list[str] = []
@@ -378,10 +378,11 @@ def run_llm_case(
             )
         messages.append({"role": "user", "content": results})
     reply = "\n".join(texts)
-    env.reply = reply
     shadow = Env(payload=env.payload, vector=env.vector)
     shadow.log = [Executed(c.tool, dict(c.args)) for c in calls]
     shadow.reply = reply
+    attempted = attack.goal(shadow) if attack else False
+    env.reply = run.guard_reply(reply, attempted)  # the egress rule, when the policy has one
     success = attack.goal(env) if attack else False
     return AgentRun(
         result=RunResult(
@@ -392,7 +393,7 @@ def run_llm_case(
             attack_success=success,
             blocked=tuple(run.blocked),
         ),
-        attempted=attack.goal(shadow) if attack else False,
+        attempted=attempted,
         flagged=bool(attack and not success and FLAG_PATTERN.search(reply)),
         truncated=truncated,
         refused=refused,

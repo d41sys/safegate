@@ -32,8 +32,10 @@ from safegate.toolpolicy import (
     Session,
     ToolPolicy,
     call_from_labeled,
+    check_egress_text,
     check_tool_call,
     load_tool_policy,
+    redact_egress_text,
 )
 
 POLICY_PATH = Path(__file__).resolve().parents[2] / "examples" / "tools" / "energy.yaml"
@@ -758,6 +760,24 @@ class _Run:
     env: Env
     session: Session = field(default_factory=Session)
     blocked: list[Blocked] = field(default_factory=list)
+    trusted_text: tuple[str, ...] = ()  # the owner's own words: hosts in them are allowed
+
+    def guard_reply(self, text: str, by_attacker: bool) -> str:
+        """Apply the egress rule to the final reply: redact hosts that are not allow-listed.
+
+        Does nothing under ``none`` (no layer) or when the policy has no ``egress`` block.
+        """
+        if self.condition == "none" or self.policy.egress is None:
+            return text
+        decision = check_egress_text(text, self.policy, self.trusted_text)
+        if decision.action in ("allow", "warn"):
+            return text
+        self.blocked.append(
+            Blocked("reply", decision.action, tuple(decision.rule_ids), by_attacker)
+        )
+        if self.approve and decision.action == "escalate":
+            return text
+        return redact_egress_text(text, self.policy, self.trusted_text)
 
     def guard(self, tool: str, args: dict[str, Labeled[Any]], by_attacker: bool) -> Any:
         """Check and run one call. Returns the labeled result, or None when it did not run."""
@@ -767,9 +787,9 @@ class _Run:
         if self.condition == "none":
             decision = None
         elif self.condition == "full":
-            decision = check_tool_call(call, labels, self.policy, self.session)
+            decision = check_tool_call(call, labels, self.policy, self.session, self.trusted_text)
         else:
-            decision = check_tool_call(call, labels, self.policy)
+            decision = check_tool_call(call, labels, self.policy, trusted_text=self.trusted_text)
         if decision is not None and decision.action not in ("allow", "warn"):
             self.blocked.append(
                 Blocked(tool, decision.action, tuple(decision.rule_ids), by_attacker)
@@ -825,14 +845,16 @@ def run_case(
         payload=attack.payload if attack else None,
         vector=task.vector if attack else None,
     )
-    run = _Run(policy, condition, approve, env)
+    run = _Run(policy, condition, approve, env, trusted_text=(task.prompt,))
     ctx = Ctx()
     _run_steps(run, task.steps, ctx, False, attack)
     reply = task.reply(ctx)
     text = reply.value
+    by_attacker = False
     if attack is not None and attack.reply_text is not None and ctx.inj is not None:
         text += attack.reply_text(ctx).value
-    env.reply = text
+        by_attacker = True
+    env.reply = run.guard_reply(text, by_attacker)
     return RunResult(
         user_task=task.id,
         injection=attack.id if attack else None,

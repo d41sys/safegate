@@ -23,8 +23,10 @@ from safegate.toolpolicy import (
     ToolPolicy,
     ToolPolicyError,
     call_from_labeled,
+    check_egress_text,
     check_tool_call,
     load_tool_policy,
+    redact_egress_text,
 )
 
 __all__ = [
@@ -53,6 +55,7 @@ __all__ = [
     "ToolPolicy",
     "ToolPolicyError",
     "call_from_labeled",
+    "check_egress_text",
     "check_spec",
     "check_tool_call",
     "combine",
@@ -62,6 +65,7 @@ __all__ = [
     "from_untrusted",
     "load_spec_policy",
     "load_tool_policy",
+    "redact_egress_text",
     "system",
     "user",
 ]
