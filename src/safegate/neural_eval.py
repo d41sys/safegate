@@ -730,6 +730,7 @@ class ParetoRow:
     diff: tuple[float, float, float] | None  # mean minus the reference band, paired interval
     escalated: float  # share of the pooled trio rows
     latency: str
+    overlaps_ref: bool = False  # mean interval overlaps the reference band's (weaker reading)
 
     @property
     def qualifies(self) -> bool:
@@ -772,12 +773,15 @@ def pareto_rows(
     ev: Evaluation, model: str, lat: dict[str, Any] | None, device: str, bands_meta: dict[str, Any]
 ) -> list[ParetoRow]:
     """safegate alone, ``model`` alone and every ``model`` cascade, ordered by escalated share."""
-    trio = [k for k in SUITES if k in ev.rows]
+    trio: list[str] = [
+        k for k in ("notinject", "wildguard", "bipia") if k in ev.rows
+    ]  # paper order
     if len(trio) != len(SUITES):
         raise ValueError("the Pareto table needs the whole InjecGuard trio")
     names = [r.name for r in ev.runs[trio[0]]]
     by_name = {n: {k: next(r for r in ev.runs[k] if r.name == n) for k in trio} for n in names}
     ref = by_name[f"cascade {model} {REFERENCE_BAND}"]
+    ref_mean = trio_mean_ci(ev.rows, ref)
     wanted = [
         SYSTEM_GATE,
         f"{model} alone",
@@ -791,15 +795,17 @@ def pareto_rows(
             len(runs[k].escalated) for k in trio
         )
         is_cascade = name.startswith("cascade ")
+        mean = trio_mean_ci(ev.rows, runs)
         out.append(
             ParetoRow(
                 name,
                 _dev_label(bands_meta, name.rsplit(" ", 1)[1]) if is_cascade else "n/a",
                 (per_set[0], per_set[1], per_set[2]),
-                trio_mean_ci(ev.rows, runs),
+                mean,
                 trio_mean_diff_ci(ev.rows, runs, ref) if is_cascade else None,
                 escalated,
                 _mean_latency(lat, name, device),
+                mean[1] <= ref_mean[2] and ref_mean[1] <= mean[2],
             )
         )
     return sorted(out, key=lambda r: (r.escalated, r.name))
@@ -845,3 +851,13 @@ def print_pareto(
             )
         else:
             w("Rule: no band qualifies; the documented primary band stays `mid`.\n")
+        weak = [
+            r
+            for r in rows
+            if r.diff is not None and r.overlaps_ref and r.escalated <= ESCALATION_CAP
+        ]
+        names = ", ".join(f"`{r.name.rsplit(' ', 1)[1]}`" for r in weak) or "none"
+        w(
+            f"Weaker reading (mean interval overlaps `{REFERENCE_BAND}`'s, same cost cap), "
+            f"not the rule: {names}.\n"
+        )

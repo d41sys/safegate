@@ -155,3 +155,9 @@ attack success `args` 40 to 20, `full` 38 to 18, `args-mislabeled` 80 to 60, `no
 `add_note.text`; benign utility and benign blocks identical. No real model ever attempted `J14`
 (0 of 270 cached runs), so this is a scripted result. Tests: `tests/test_egress.py`. README, "Egress
 rule", has the table and the limits.
+
+**Owner decision, 2026-10-30: the egress allow-list stays opt-in.** The owner kept the rule off by
+default: `examples/tools/energy.yaml` has no `egress` block, a deployment enables it with
+`examples/tools/energy-egress.yaml` or an `egress:` block of its own, and no default host list is
+shipped (the list is the owner's to maintain). Nothing above changes: every scored number in this
+file is from the default policy. Recorded in the README under "Egress rule".

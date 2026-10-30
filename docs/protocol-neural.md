@@ -606,3 +606,83 @@ numbers and a round margin, not fitted.
 Seen before this section: the K-S1 results of every system and band on all twelve sets (above), the
 README tables, and the dev shares printed by `--derive-bands` for the new family. Not seen: the trio
 or any set under the new `lo` values. The grid was not tuned on the dev shares.
+
+### Results of the escalation-rate bands (replayed offline from the committed caches, 0 API calls)
+
+Scored on 30 Oct 2026 after the pre-registration commit `4341579`: `uv run safegate neural-eval
+--suite injecguard --bands all --pareto --offline`. **Post-hoc sensitivity analysis**: the trio was
+already seen for `mid` and `wide`, so the table maps the trade-off; it does not confirm a band chosen
+in advance. Accuracy in %, 95% bootstrap interval of the trio mean (1,000 resamples, seed 20261030);
+"minus `wide`" is the paired bootstrap interval of the mean difference. "Dev" is the share of dev
+benign rows the band was derived for; "trio escalated" is the share of the 1,435 trio rows the
+cascade sent to PIGuard (the actual escalation on benchmark traffic).
+
+| System (PIGuard second stage) | Dev benign escalated | Trio escalated | NotInject | WildGuard benign | BIPIA | Mean [95% CI] | Mean minus `wide` [paired 95% CI] | Qualifies |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| safegate alone | n/a | 0.0% | 94.4 | 91.1 | 8.3 | 64.6 [62.9, 66.7] | n/a | n/a |
+| `narrow` | 8% | 7.0% | 97.9 | 93.2 | 4.3 | 65.2 [63.8, 66.7] | -12.6 [-15.0, -10.1] | no |
+| `mid` (primary) | 28% | 40.1% | 92.0 | 80.2 | 49.3 | 73.9 [71.0, 76.7] | -3.8 [-6.5, -1.4] | no |
+| `t35` | 35% | 48.8% | 91.2 | 78.7 | 57.7 | 75.8 [73.3, 78.5] | -1.9 [-4.0, -0.2] | no |
+| `t40` | 40% | 56.6% | 91.2 | 77.8 | 59.7 | 76.2 [73.6, 78.9] | -1.5 [-3.4, +0.1] | no |
+| `t45` | 45% | 68.1% | 90.0 | 76.8 | 63.0 | 76.6 [74.1, 79.1] | -1.1 [-2.6, +0.2] | no |
+| `t50` | 50% | 76.5% | 89.4 | 76.4 | 66.3 | 77.4 [74.8, 79.7] | -0.3 [-1.2, +0.4] | no |
+| `t55` | 55% | 83.1% | 89.1 | 76.2 | 68.3 | 77.9 [75.4, 80.3] | +0.2 [+0.0, +0.4] | no |
+| `wide` | 58% | 86.1% | 88.8 | 76.0 | 68.3 | 77.7 [75.2, 80.1] | reference | no |
+| `t60` | 60% | 88.2% | 88.8 | 75.9 | 68.3 | 77.7 [75.2, 80.0] | -0.0 [-0.1, +0.0] | no |
+| `t70` | 70% | 96.7% | 88.5 | 75.9 | 68.3 | 77.6 [75.1, 79.9] | -0.1 [-0.4, +0.0] | no |
+| PIGuard alone | n/a | 100% | 88.5 | 76.1 | 68.3 | 77.6 [75.2, 80.0] | n/a | n/a |
+
+(The trio rows are 339 NotInject, 971 WildGuard benign and 125 BIPIA; BIPIA is the mean of the text
+and code accuracies. Per-set Wilson intervals of `mid`, `narrow`, `wide` are in "Full output".)
+
+**Rule outcome: no band qualifies, `mid` stays the documented primary band.** Within the 60% cost
+cap only `narrow`, `mid`, `t35` and `t40` are available, and every one has a paired lower bound
+below -2 points (-15.0, -6.5, -4.0, -3.4). `t45`'s lower bound is -2.6; the first band whose lower bound clears -2 points is
+`t50` (-1.2), and it escalates 76.5% of the rows. The weaker
+reading of the ask, "mean interval overlaps `wide`'s" at most 60% escalated, would admit `mid`,
+`t35` and `t40`; its cheapest member is `mid`, the band already primary, so both readings leave the
+primary band where it was.
+
+Reading the map (this is the post-hoc part):
+
+1. **The curve is concave with a knee around `t35` to `t40`.** From `mid` to `t40`, 16.5 more points
+   of the trio traffic are escalated and the mean rises 2.3 points (73.9% to 76.2%), which is 61%
+   of the 3.8 points between `mid` and `wide` for 36% of the 46 extra escalated points. The last 1.5
+   points to `wide` cost 30 more points of traffic. [INFERENCE] The knee is read off a table already
+   seen; a different mix of benign and attack traffic would put it elsewhere, since the trio's
+   escalation (benign prompts that look like attacks) is far above the dev share.
+2. **Where the gain comes from.** BIPIA moves 49.3% to 59.7% from `mid` to `t40` and to 68.3% at
+   `t55`; the benign columns give up 0.8 points (NotInject 92.0 to 91.2) and 2.4 points
+   (WildGuard 80.2 to 77.8) over the same step. From `t55` on every BIPIA attack the model can flag is
+   escalated, so `t55` to `t70` only add cost (escalated 83.1% to 96.7%) and the mean slips by
+   0.3 points to PIGuard alone's 77.6%.
+3. **The last 14% the gate skips are not free.** `t70` (96.7% escalated) is PIGuard alone within
+   0.0 points on the mean and BIPIA, and 0.0 and 0.2 on the benign sets, i.e. the cascade only
+   becomes the transformer.
+4. **Latency (MPS, batch size 1, one pass on the K-S1 samples, `latency_all.json`).** Mean per request
+   (milliseconds), over the trio's 525 timed rows: safegate alone 0.7, `narrow` 2.9, `mid` 12.6,
+   `t35` 14.2, `t40` 15.6, `t45` 18.3, `t50` 20.1, `t55` 21.1, `wide` 21.6, `t60` 21.8, `t70` 23.2,
+   PIGuard alone 23.4. The mean tracks the escalated share, as a cascade's should: each additional
+   10 points of traffic costs about 2.3 ms per request on average. The p95 of every band from `mid`
+   up is the transformer's (22 ms NotInject, 53 ms WildGuard, 33 ms BIPIA); the p50 of NotInject
+   stays the gate's (0.4 and 0.5 ms) through `t40` and becomes the transformer's (19.2 ms) at `t45`,
+   WildGuard's p50 is the transformer's from `t35` and BIPIA's already at `mid`. The BIPIA p95 here is 33 ms against
+   311 ms in the K-S1 run, which is consistent with that run's first-call kernel compilation (this run
+   did not see the shapes cold) but was not tested. Other devices (CPU) were not re-timed; the K-S1 CPU figures still apply.
+
+### Predictions against what happened (escalation-rate bands)
+
+| # | Prediction | Observed | |
+| --- | --- | --- | --- |
+| Q1 | Trio escalation `t35` 43-59, `t40` 50-66, `t45` 58-74, `t50` 65-81, `t55` 72-88, `t60` 79-94, `t70` 87-100% | 48.8 / 56.6 / 68.1 / 76.5 / 83.1 / 88.2 / 96.7% | right, all seven |
+| Q2 | BIPIA up and the benign sets down with the target; the mean from `t40` between `mid` and `wide`; `t60` and `t70` within 1 point of `wide` | BIPIA 57.7 to 68.3, NotInject 91.2 to 88.5, WildGuard 78.7 to 75.9 (all three monotone); mean 76.2, 76.6, 77.4 between; `t55` 77.9 is 0.2 above `wide` (paired interval [+0.0, +0.4]); `t60`, `t70` within 0.1 | right, except `t55` marginally above `wide` |
+| Q3 | No band qualifies; `mid` stays primary (60% confidence; failure mode: a knee near `t40`-`t45` at 55-60% escalated) | none qualifies; `t40` at 56.6% has lower bound -3.4 | right, and the failure mode came closest: the knee exists but misses the margin by 1.4 points |
+| Q4 | p50 = gate's while under half the rows escalated, transformer's after; p95 transformer's for every band | NotInject p50 gate's through `t40`, transformer's from `t45`; WildGuard and BIPIA transformer's from `t35`; p95 transformer's for `mid` and every `t` band (`narrow` is 0.6 ms on NotInject) | right for the new family |
+| Q5 | ProtectAI: no band qualifies, none beats safegate alone above `t45` | by the rule's letter 4 ProtectAI bands "qualify" (`narrow`, `mid`, `t35`, `t40`): the rule asks only that a band not be worse than `wide`, and ProtectAI's `wide` is its worst (47.2%), so the rule is vacuous for it. No ProtectAI band beats safegate alone (best 64.1% against 64.6%); every band from `mid` up is below it | second half right, first half wrong as written |
+
+Deviations: (1) the Pareto table prints the rule for ProtectAI too, as registered, and the printed
+ProtectAI verdict ("`narrow` recommended") is not a finding: the primary band is defined for the
+PIGuard cascade, and ProtectAI cascades stay below safegate alone. (2) The first printed table
+swapped the BIPIA and WildGuard columns (code order `SUITES`); fixed before any number was written
+down, no value changed. (3) The weaker reading was added to the printout after the first run (the
+pre-registration promised it in the output); the rule itself was not touched.

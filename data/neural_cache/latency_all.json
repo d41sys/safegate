@@ -1,0 +1,767 @@
+{
+  "n_per_set": 200,
+  "seed": 0,
+  "sets": {
+    "bipia": 125,
+    "deepset": 116,
+    "gandalf_test": 112,
+    "harmbench": 200,
+    "jailbreak": 200,
+    "jbb": 200,
+    "notinject": 200,
+    "promptshield": 200,
+    "slabs": 200,
+    "toxicchat": 200,
+    "wildguard": 200,
+    "xtram1": 200
+  },
+  "systems": {
+    "safegate alone": {
+      "bipia": {
+        "p50_ms": 0.283,
+        "p95_ms": 1.141,
+        "mean_ms": 0.451
+      },
+      "deepset": {
+        "p50_ms": 0.263,
+        "p95_ms": 1.013,
+        "mean_ms": 0.398
+      },
+      "gandalf_test": {
+        "p50_ms": 0.226,
+        "p95_ms": 0.436,
+        "mean_ms": 0.247
+      },
+      "harmbench": {
+        "p50_ms": 0.252,
+        "p95_ms": 0.448,
+        "mean_ms": 0.269
+      },
+      "jailbreak": {
+        "p50_ms": 2.053,
+        "p95_ms": 10.255,
+        "mean_ms": 3.286
+      },
+      "jbb": {
+        "p50_ms": 0.272,
+        "p95_ms": 0.399,
+        "mean_ms": 0.274
+      },
+      "notinject": {
+        "p50_ms": 0.299,
+        "p95_ms": 0.517,
+        "mean_ms": 0.298
+      },
+      "promptshield": {
+        "p50_ms": 1.241,
+        "p95_ms": 6.157,
+        "mean_ms": 1.936
+      },
+      "slabs": {
+        "p50_ms": 0.162,
+        "p95_ms": 0.349,
+        "mean_ms": 0.19
+      },
+      "toxicchat": {
+        "p50_ms": 0.254,
+        "p95_ms": 3.451,
+        "mean_ms": 0.733
+      },
+      "wildguard": {
+        "p50_ms": 1.394,
+        "p95_ms": 3.779,
+        "mean_ms": 1.34
+      },
+      "xtram1": {
+        "p50_ms": 0.434,
+        "p95_ms": 5.802,
+        "mean_ms": 1.168
+      }
+    },
+    "piguard alone [mps]": {
+      "bipia": {
+        "p50_ms": 21.987,
+        "p95_ms": 31.637,
+        "mean_ms": 23.011
+      },
+      "deepset": {
+        "p50_ms": 20.17,
+        "p95_ms": 26.128,
+        "mean_ms": 20.952
+      },
+      "gandalf_test": {
+        "p50_ms": 19.773,
+        "p95_ms": 22.403,
+        "mean_ms": 19.629
+      },
+      "harmbench": {
+        "p50_ms": 19.177,
+        "p95_ms": 22.01,
+        "mean_ms": 18.884
+      },
+      "jailbreak": {
+        "p50_ms": 33.864,
+        "p95_ms": 115.315,
+        "mean_ms": 53.68
+      },
+      "jbb": {
+        "p50_ms": 18.779,
+        "p95_ms": 21.472,
+        "mean_ms": 18.515
+      },
+      "notinject": {
+        "p50_ms": 19.525,
+        "p95_ms": 21.994,
+        "mean_ms": 19.265
+      },
+      "promptshield": {
+        "p50_ms": 25.607,
+        "p95_ms": 113.124,
+        "mean_ms": 38.918
+      },
+      "slabs": {
+        "p50_ms": 16.696,
+        "p95_ms": 21.162,
+        "mean_ms": 17.713
+      },
+      "toxicchat": {
+        "p50_ms": 19.944,
+        "p95_ms": 51.448,
+        "mean_ms": 24.601
+      },
+      "wildguard": {
+        "p50_ms": 24.666,
+        "p95_ms": 49.801,
+        "mean_ms": 27.769
+      },
+      "xtram1": {
+        "p50_ms": 20.565,
+        "p95_ms": 109.032,
+        "mean_ms": 29.978
+      }
+    },
+    "cascade piguard narrow [mps]": {
+      "bipia": {
+        "p50_ms": 0.345,
+        "p95_ms": 18.588,
+        "mean_ms": 2.097
+      },
+      "deepset": {
+        "p50_ms": 0.286,
+        "p95_ms": 19.71,
+        "mean_ms": 2.16
+      },
+      "gandalf_test": {
+        "p50_ms": 0.389,
+        "p95_ms": 22.332,
+        "mean_ms": 8.555
+      },
+      "harmbench": {
+        "p50_ms": 0.252,
+        "p95_ms": 0.448,
+        "mean_ms": 0.269
+      },
+      "jailbreak": {
+        "p50_ms": 2.449,
+        "p95_ms": 34.786,
+        "mean_ms": 7.729
+      },
+      "jbb": {
+        "p50_ms": 0.272,
+        "p95_ms": 0.403,
+        "mean_ms": 0.377
+      },
+      "notinject": {
+        "p50_ms": 0.308,
+        "p95_ms": 0.628,
+        "mean_ms": 1.191
+      },
+      "promptshield": {
+        "p50_ms": 1.29,
+        "p95_ms": 32.022,
+        "mean_ms": 5.971
+      },
+      "slabs": {
+        "p50_ms": 0.167,
+        "p95_ms": 16.949,
+        "mean_ms": 1.752
+      },
+      "toxicchat": {
+        "p50_ms": 0.259,
+        "p95_ms": 19.961,
+        "mean_ms": 2.985
+      },
+      "wildguard": {
+        "p50_ms": 1.394,
+        "p95_ms": 32.365,
+        "mean_ms": 5.153
+      },
+      "xtram1": {
+        "p50_ms": 0.472,
+        "p95_ms": 23.56,
+        "mean_ms": 5.459
+      }
+    },
+    "cascade piguard mid [mps]": {
+      "bipia": {
+        "p50_ms": 19.366,
+        "p95_ms": 32.694,
+        "mean_ms": 14.67
+      },
+      "deepset": {
+        "p50_ms": 0.397,
+        "p95_ms": 24.393,
+        "mean_ms": 7.522
+      },
+      "gandalf_test": {
+        "p50_ms": 15.989,
+        "p95_ms": 22.332,
+        "mean_ms": 10.728
+      },
+      "harmbench": {
+        "p50_ms": 0.265,
+        "p95_ms": 20.137,
+        "mean_ms": 3.235
+      },
+      "jailbreak": {
+        "p50_ms": 5.628,
+        "p95_ms": 67.89,
+        "mean_ms": 15.572
+      },
+      "jbb": {
+        "p50_ms": 0.275,
+        "p95_ms": 17.618,
+        "mean_ms": 1.795
+      },
+      "notinject": {
+        "p50_ms": 0.367,
+        "p95_ms": 21.815,
+        "mean_ms": 6.53
+      },
+      "promptshield": {
+        "p50_ms": 20.187,
+        "p95_ms": 95.361,
+        "mean_ms": 24.661
+      },
+      "slabs": {
+        "p50_ms": 0.194,
+        "p95_ms": 20.85,
+        "mean_ms": 6.663
+      },
+      "toxicchat": {
+        "p50_ms": 0.434,
+        "p95_ms": 48.339,
+        "mean_ms": 10.989
+      },
+      "wildguard": {
+        "p50_ms": 2.435,
+        "p95_ms": 52.801,
+        "mean_ms": 17.377
+      },
+      "xtram1": {
+        "p50_ms": 12.908,
+        "p95_ms": 64.25,
+        "mean_ms": 16.521
+      }
+    },
+    "cascade piguard wide [mps]": {
+      "bipia": {
+        "p50_ms": 22.255,
+        "p95_ms": 32.694,
+        "mean_ms": 21.854
+      },
+      "deepset": {
+        "p50_ms": 20.162,
+        "p95_ms": 27.103,
+        "mean_ms": 19.03
+      },
+      "gandalf_test": {
+        "p50_ms": 16.199,
+        "p95_ms": 22.332,
+        "mean_ms": 11.045
+      },
+      "harmbench": {
+        "p50_ms": 0.423,
+        "p95_ms": 21.212,
+        "mean_ms": 9.017
+      },
+      "jailbreak": {
+        "p50_ms": 13.562,
+        "p95_ms": 76.812,
+        "mean_ms": 21.334
+      },
+      "jbb": {
+        "p50_ms": 0.35,
+        "p95_ms": 21.149,
+        "mean_ms": 8.125
+      },
+      "notinject": {
+        "p50_ms": 19.554,
+        "p95_ms": 22.175,
+        "mean_ms": 16.859
+      },
+      "promptshield": {
+        "p50_ms": 26.033,
+        "p95_ms": 117.271,
+        "mean_ms": 36.638
+      },
+      "slabs": {
+        "p50_ms": 16.305,
+        "p95_ms": 21.394,
+        "mean_ms": 14.934
+      },
+      "toxicchat": {
+        "p50_ms": 19.675,
+        "p95_ms": 49.946,
+        "mean_ms": 19.62
+      },
+      "wildguard": {
+        "p50_ms": 23.575,
+        "p95_ms": 52.801,
+        "mean_ms": 26.194
+      },
+      "xtram1": {
+        "p50_ms": 20.159,
+        "p95_ms": 95.778,
+        "mean_ms": 24.58
+      }
+    },
+    "cascade piguard t35 [mps]": {
+      "bipia": {
+        "p50_ms": 20.298,
+        "p95_ms": 32.694,
+        "mean_ms": 17.208
+      },
+      "deepset": {
+        "p50_ms": 0.835,
+        "p95_ms": 26.527,
+        "mean_ms": 10.63
+      },
+      "gandalf_test": {
+        "p50_ms": 16.199,
+        "p95_ms": 22.332,
+        "mean_ms": 10.909
+      },
+      "harmbench": {
+        "p50_ms": 0.269,
+        "p95_ms": 20.261,
+        "mean_ms": 4.266
+      },
+      "jailbreak": {
+        "p50_ms": 6.644,
+        "p95_ms": 76.812,
+        "mean_ms": 17.895
+      },
+      "jbb": {
+        "p50_ms": 0.277,
+        "p95_ms": 19.209,
+        "mean_ms": 2.431
+      },
+      "notinject": {
+        "p50_ms": 0.405,
+        "p95_ms": 21.885,
+        "mean_ms": 7.616
+      },
+      "promptshield": {
+        "p50_ms": 22.322,
+        "p95_ms": 100.17,
+        "mean_ms": 28.299
+      },
+      "slabs": {
+        "p50_ms": 0.218,
+        "p95_ms": 21.174,
+        "mean_ms": 8.016
+      },
+      "toxicchat": {
+        "p50_ms": 3.177,
+        "p95_ms": 48.339,
+        "mean_ms": 13.468
+      },
+      "wildguard": {
+        "p50_ms": 19.373,
+        "p95_ms": 52.801,
+        "mean_ms": 18.946
+      },
+      "xtram1": {
+        "p50_ms": 19.103,
+        "p95_ms": 95.778,
+        "mean_ms": 20.051
+      }
+    },
+    "cascade piguard t40 [mps]": {
+      "bipia": {
+        "p50_ms": 21.099,
+        "p95_ms": 32.694,
+        "mean_ms": 18.2
+      },
+      "deepset": {
+        "p50_ms": 19.61,
+        "p95_ms": 27.103,
+        "mean_ms": 14.004
+      },
+      "gandalf_test": {
+        "p50_ms": 16.199,
+        "p95_ms": 22.332,
+        "mean_ms": 10.909
+      },
+      "harmbench": {
+        "p50_ms": 0.271,
+        "p95_ms": 20.488,
+        "mean_ms": 4.75
+      },
+      "jailbreak": {
+        "p50_ms": 8.157,
+        "p95_ms": 76.812,
+        "mean_ms": 18.719
+      },
+      "jbb": {
+        "p50_ms": 0.283,
+        "p95_ms": 19.745,
+        "mean_ms": 3.206
+      },
+      "notinject": {
+        "p50_ms": 0.523,
+        "p95_ms": 22.006,
+        "mean_ms": 9.408
+      },
+      "promptshield": {
+        "p50_ms": 24.148,
+        "p95_ms": 114.758,
+        "mean_ms": 31.24
+      },
+      "slabs": {
+        "p50_ms": 0.364,
+        "p95_ms": 21.222,
+        "mean_ms": 9.157
+      },
+      "toxicchat": {
+        "p50_ms": 17.113,
+        "p95_ms": 49.946,
+        "mean_ms": 15.058
+      },
+      "wildguard": {
+        "p50_ms": 19.899,
+        "p95_ms": 52.801,
+        "mean_ms": 20.054
+      },
+      "xtram1": {
+        "p50_ms": 19.507,
+        "p95_ms": 95.778,
+        "mean_ms": 21.449
+      }
+    },
+    "cascade piguard t45 [mps]": {
+      "bipia": {
+        "p50_ms": 21.775,
+        "p95_ms": 32.694,
+        "mean_ms": 19.133
+      },
+      "deepset": {
+        "p50_ms": 19.858,
+        "p95_ms": 27.103,
+        "mean_ms": 16.585
+      },
+      "gandalf_test": {
+        "p50_ms": 16.199,
+        "p95_ms": 22.332,
+        "mean_ms": 11.045
+      },
+      "harmbench": {
+        "p50_ms": 0.272,
+        "p95_ms": 20.54,
+        "mean_ms": 5.302
+      },
+      "jailbreak": {
+        "p50_ms": 9.505,
+        "p95_ms": 76.812,
+        "mean_ms": 19.967
+      },
+      "jbb": {
+        "p50_ms": 0.284,
+        "p95_ms": 19.825,
+        "mean_ms": 3.998
+      },
+      "notinject": {
+        "p50_ms": 19.21,
+        "p95_ms": 22.082,
+        "mean_ms": 14.094
+      },
+      "promptshield": {
+        "p50_ms": 24.329,
+        "p95_ms": 114.758,
+        "mean_ms": 32.633
+      },
+      "slabs": {
+        "p50_ms": 15.781,
+        "p95_ms": 21.222,
+        "mean_ms": 10.906
+      },
+      "toxicchat": {
+        "p50_ms": 19.026,
+        "p95_ms": 49.946,
+        "mean_ms": 15.848
+      },
+      "wildguard": {
+        "p50_ms": 21.613,
+        "p95_ms": 52.801,
+        "mean_ms": 21.977
+      },
+      "xtram1": {
+        "p50_ms": 19.926,
+        "p95_ms": 95.778,
+        "mean_ms": 22.569
+      }
+    },
+    "cascade piguard t50 [mps]": {
+      "bipia": {
+        "p50_ms": 22.023,
+        "p95_ms": 32.694,
+        "mean_ms": 20.816
+      },
+      "deepset": {
+        "p50_ms": 20.134,
+        "p95_ms": 27.103,
+        "mean_ms": 18.187
+      },
+      "gandalf_test": {
+        "p50_ms": 16.199,
+        "p95_ms": 22.332,
+        "mean_ms": 11.045
+      },
+      "harmbench": {
+        "p50_ms": 0.277,
+        "p95_ms": 20.828,
+        "mean_ms": 6.042
+      },
+      "jailbreak": {
+        "p50_ms": 11.191,
+        "p95_ms": 76.812,
+        "mean_ms": 20.71
+      },
+      "jbb": {
+        "p50_ms": 0.29,
+        "p95_ms": 20.295,
+        "mean_ms": 5.504
+      },
+      "notinject": {
+        "p50_ms": 19.365,
+        "p95_ms": 22.082,
+        "mean_ms": 15.362
+      },
+      "promptshield": {
+        "p50_ms": 25.659,
+        "p95_ms": 117.271,
+        "mean_ms": 34.66
+      },
+      "slabs": {
+        "p50_ms": 16.082,
+        "p95_ms": 21.222,
+        "mean_ms": 12.914
+      },
+      "toxicchat": {
+        "p50_ms": 19.334,
+        "p95_ms": 49.946,
+        "mean_ms": 17.705
+      },
+      "wildguard": {
+        "p50_ms": 23.575,
+        "p95_ms": 52.801,
+        "mean_ms": 24.324
+      },
+      "xtram1": {
+        "p50_ms": 19.996,
+        "p95_ms": 95.778,
+        "mean_ms": 23.662
+      }
+    },
+    "cascade piguard t55 [mps]": {
+      "bipia": {
+        "p50_ms": 22.255,
+        "p95_ms": 32.694,
+        "mean_ms": 21.692
+      },
+      "deepset": {
+        "p50_ms": 20.162,
+        "p95_ms": 27.103,
+        "mean_ms": 19.03
+      },
+      "gandalf_test": {
+        "p50_ms": 16.199,
+        "p95_ms": 22.332,
+        "mean_ms": 11.045
+      },
+      "harmbench": {
+        "p50_ms": 0.307,
+        "p95_ms": 20.988,
+        "mean_ms": 7.5
+      },
+      "jailbreak": {
+        "p50_ms": 12.953,
+        "p95_ms": 76.812,
+        "mean_ms": 21.134
+      },
+      "jbb": {
+        "p50_ms": 0.302,
+        "p95_ms": 20.714,
+        "mean_ms": 6.876
+      },
+      "notinject": {
+        "p50_ms": 19.503,
+        "p95_ms": 22.175,
+        "mean_ms": 16.549
+      },
+      "promptshield": {
+        "p50_ms": 25.872,
+        "p95_ms": 117.271,
+        "mean_ms": 36.215
+      },
+      "slabs": {
+        "p50_ms": 16.249,
+        "p95_ms": 21.394,
+        "mean_ms": 14.189
+      },
+      "toxicchat": {
+        "p50_ms": 19.411,
+        "p95_ms": 49.946,
+        "mean_ms": 18.501
+      },
+      "wildguard": {
+        "p50_ms": 23.575,
+        "p95_ms": 52.801,
+        "mean_ms": 25.228
+      },
+      "xtram1": {
+        "p50_ms": 20.159,
+        "p95_ms": 95.778,
+        "mean_ms": 24.406
+      }
+    },
+    "cascade piguard t60 [mps]": {
+      "bipia": {
+        "p50_ms": 22.255,
+        "p95_ms": 32.694,
+        "mean_ms": 21.991
+      },
+      "deepset": {
+        "p50_ms": 20.162,
+        "p95_ms": 27.103,
+        "mean_ms": 19.03
+      },
+      "gandalf_test": {
+        "p50_ms": 16.199,
+        "p95_ms": 22.332,
+        "mean_ms": 11.045
+      },
+      "harmbench": {
+        "p50_ms": 15.719,
+        "p95_ms": 21.254,
+        "mean_ms": 10.724
+      },
+      "jailbreak": {
+        "p50_ms": 17.366,
+        "p95_ms": 76.812,
+        "mean_ms": 21.711
+      },
+      "jbb": {
+        "p50_ms": 0.359,
+        "p95_ms": 21.233,
+        "mean_ms": 8.502
+      },
+      "notinject": {
+        "p50_ms": 19.567,
+        "p95_ms": 22.175,
+        "mean_ms": 17.112
+      },
+      "promptshield": {
+        "p50_ms": 26.033,
+        "p95_ms": 117.271,
+        "mean_ms": 36.942
+      },
+      "slabs": {
+        "p50_ms": 16.365,
+        "p95_ms": 21.394,
+        "mean_ms": 15.348
+      },
+      "toxicchat": {
+        "p50_ms": 19.698,
+        "p95_ms": 49.946,
+        "mean_ms": 19.987
+      },
+      "wildguard": {
+        "p50_ms": 23.575,
+        "p95_ms": 52.801,
+        "mean_ms": 26.294
+      },
+      "xtram1": {
+        "p50_ms": 20.333,
+        "p95_ms": 95.778,
+        "mean_ms": 24.989
+      }
+    },
+    "cascade piguard t70 [mps]": {
+      "bipia": {
+        "p50_ms": 22.418,
+        "p95_ms": 32.694,
+        "mean_ms": 22.976
+      },
+      "deepset": {
+        "p50_ms": 20.222,
+        "p95_ms": 27.103,
+        "mean_ms": 19.919
+      },
+      "gandalf_test": {
+        "p50_ms": 16.199,
+        "p95_ms": 22.332,
+        "mean_ms": 11.045
+      },
+      "harmbench": {
+        "p50_ms": 19.035,
+        "p95_ms": 22.121,
+        "mean_ms": 16.07
+      },
+      "jailbreak": {
+        "p50_ms": 19.478,
+        "p95_ms": 76.812,
+        "mean_ms": 22.428
+      },
+      "jbb": {
+        "p50_ms": 18.131,
+        "p95_ms": 21.488,
+        "mean_ms": 14.069
+      },
+      "notinject": {
+        "p50_ms": 19.733,
+        "p95_ms": 22.204,
+        "mean_ms": 18.726
+      },
+      "promptshield": {
+        "p50_ms": 26.033,
+        "p95_ms": 117.271,
+        "mean_ms": 37.561
+      },
+      "slabs": {
+        "p50_ms": 16.807,
+        "p95_ms": 21.394,
+        "mean_ms": 17.246
+      },
+      "toxicchat": {
+        "p50_ms": 19.916,
+        "p95_ms": 49.946,
+        "mean_ms": 22.223
+      },
+      "wildguard": {
+        "p50_ms": 23.99,
+        "p95_ms": 52.801,
+        "mean_ms": 27.749
+      },
+      "xtram1": {
+        "p50_ms": 20.375,
+        "p95_ms": 95.778,
+        "mean_ms": 25.505
+      }
+    }
+  },
+  "devices": {
+    "mps": "mps"
+  }
+}
