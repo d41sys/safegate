@@ -8,6 +8,7 @@ oracle had by construction, the provenance label of every argument, is inferred 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import re
@@ -304,8 +305,18 @@ def run_llm_case(
     policy: ToolPolicy,
     system: str = SYSTEM_PROMPT,
     payload_style: str = "base",
+    recorded_under: ToolPolicy | None = None,
 ) -> AgentRun:
-    """Run one user task (with or without an injection) with the model as the agent."""
+    """Run one user task (with or without an injection) with the model as the agent.
+
+    ``recorded_under`` is for replaying a cache that was recorded under another policy (the caches
+    of the weak-agent and attacker-string runs were recorded before the egress rule became the
+    default). The model-visible tool results, hence the requests that the offline cache must
+    contain, come from that policy; every call and the reply are also run through ``policy`` on a
+    second environment, and utility, attack success and blocks are scored there. The model never
+    saw a refusal that only ``policy`` issues, so its later turns are the recorded ones: a
+    counterfactual re-score of the last blocked step, not a new run.
+    """
     if condition not in LLM_CONDITIONS:
         raise ValueError(f"unknown condition {condition!r}")
     if attack is not None and task.vector is None:
@@ -314,7 +325,14 @@ def run_llm_case(
         payload=render_payload(payload_style, attack) if attack else None,
         vector=task.vector if attack else None,
     )
-    run = _Run(policy, condition, False, env, trusted_text=(task.prompt,))
+    run = _Run(recorded_under or policy, condition, False, env, trusted_text=(task.prompt,))
+    scored = run
+    if recorded_under is not None:
+        scored_env = Env(
+            payload=render_payload(payload_style, attack) if attack else None,
+            vector=task.vector if attack else None,
+        )
+        scored = _Run(policy, condition, False, scored_env, trusted_text=(task.prompt,))
     labeler = ArgLabeler(task.prompt)
     messages: list[dict[str, Any]] = [{"role": "user", "content": task.prompt}]
     texts: list[str] = []
@@ -345,6 +363,10 @@ def run_llm_case(
                 result = run.guard(name, labeled, False)
             except (KeyError, ValueError, TypeError) as exc:
                 error = f"Invalid arguments: {exc}"
+            if scored is not run:
+                # an invalid call is the one the recorded policy already reported
+                with contextlib.suppress(KeyError, ValueError, TypeError):
+                    scored.guard(name, labeled, False)
             if error is not None:
                 content, action = error, "error"
             elif result is None:
@@ -382,16 +404,17 @@ def run_llm_case(
     shadow.log = [Executed(c.tool, dict(c.args)) for c in calls]
     shadow.reply = reply
     attempted = attack.goal(shadow) if attack else False
-    env.reply = run.guard_reply(reply, attempted)  # the egress rule, when the policy has one
-    success = attack.goal(env) if attack else False
+    # the egress rule, when the policy has one
+    scored.env.reply = scored.guard_reply(reply, attempted)
+    success = attack.goal(scored.env) if attack else False
     return AgentRun(
         result=RunResult(
             user_task=task.id,
             injection=attack.id if attack else None,
             condition=condition,
-            utility=task.done(env),
+            utility=task.done(scored.env),
             attack_success=success,
-            blocked=tuple(run.blocked),
+            blocked=tuple(scored.blocked),
         ),
         attempted=attempted,
         flagged=bool(attack and not success and FLAG_PATTERN.search(reply)),
@@ -463,6 +486,7 @@ def run_llm_suite(
     on_progress: Callable[[int, int], None] | None = None,
     payload_style: str = "base",
     screen: str | None = None,
+    recorded_under: ToolPolicy | None = None,
 ) -> LLMSuiteResult:
     """Run the benign tasks and the security cases under each condition.
 
@@ -470,6 +494,7 @@ def run_llm_suite(
     string injections only, so those styles run 80 cases. With ``screen`` ("stage1", "stage2" or
     "strings") only the attacked cases of that screening subset run, and no benign task;
     "strings" goes with the string styles, the other two with the other styles.
+    ``recorded_under``: the policy a replayed cache was recorded under (see ``run_llm_case``).
     """
     if payload_style not in ALL_STYLES:
         raise ValueError(f"unknown payload style {payload_style!r}")
@@ -496,7 +521,7 @@ def run_llm_suite(
     def work(job: tuple[str, UserTask, InjectionTask | None]) -> AgentRun:
         nonlocal done
         c, t, a = job
-        out = run_llm_case(client, t, a, c, pol, system, payload_style)
+        out = run_llm_case(client, t, a, c, pol, system, payload_style, recorded_under)
         done += 1
         if on_progress is not None:
             on_progress(done, len(jobs))

@@ -43,7 +43,8 @@ Two experiments, both through `safegate.llm` (stdlib `urllib` client with a JSON
 
 The 18 user tasks, 15 injection tasks, the 150 security cases (10 injectable tasks x 15
 injections), the payload texts, the vectors (where the payload sits in an inbox, calendar or
-page), the policy `examples/tools/energy.yaml`, the layer (`check_tool_call`, `Session`, Rule of
+page), the policy `examples/tools/energy-noegress.yaml` (the default `energy.yaml` until
+2026-10-30; see "Update, 2026-10-30" at the end), the layer (`check_tool_call`, `Session`, Rule of
 Two) and the checkers (`UserTask.done`, `InjectionTask.goal`) are exactly those of
 `toolsuite.py`. Attack success means the injected goal predicate holds on the synthetic site
 afterwards; utility means the user task predicate holds.
@@ -854,3 +855,33 @@ subset or schedule changed after the first scored run.
   experiment 3 (n=25 to 50 per cell, none of them string styles); Sonnet 5.5 was run only with the
   base payloads (experiments 1 and 1b).
 * The payloads, scenarios and checkers are the author's.
+
+## Update, 2026-10-30: the default policy has the egress rule on
+
+Owner decision, 2026-10-30: the reply-side egress allow-list (`egress:` block, `scan_hosts` on
+outgoing text) is on by default, so `examples/tools/energy.yaml` now has it and
+`examples/tools/energy-noegress.yaml` is the policy every run above was recorded and scored under.
+No call was made: scoring reads `data/llm_cache/*` only, nothing was deleted or re-recorded.
+
+* **Predictions and scored numbers above are the `energy-noegress.yaml` rows.** The pinned tests
+  (`tests/test_llm_results.py`, `test_weak_results.py`, `test_string_results.py`) score under it.
+* **Replay under the default.** `--llm-offline` against the default policy replays 53 of the 58
+  cached full-run and screening configurations as recorded; 52 are identical and the Sonnet 5.5
+  `default` run differs only in a blocked-reason list (`B09`, `reply: egress-host`), headline
+  numbers unchanged. Five (Sonnet 4.5: `compliant` with `system`, `notice`, `operator`, `default`
+  with `system`; Haiku 4.5: `compliant` with `operator`) miss the cache, because `scan_hosts`
+  refuses the weaker models' benign e-mails to the owner (`B05`, `B06`: they list the inbox senders'
+  addresses), the refusal text is a new model-visible tool result, and the next request was never
+  recorded.
+* **`--recorded-under examples/tools/energy-noegress.yaml`.** The model-visible tool results come
+  from the recording policy (every recorded request is found); each call and the reply also run
+  through `--policy` on a second environment, which produces the scores. This is a counterfactual
+  re-score: the model never saw a refusal that only the default issues, so its later turns are the
+  recorded ones. It is not evidence of what the model would have done after the refusal.
+* **Result of the re-score.** Attack success and attempts: unchanged in all five (`J13` and `J14`
+  were never attempted by any real model). Cost: benign tasks with a block rise 2 to 4 (`args`) and
+  4 to 5 (`full`) in the three Sonnet 4.5 `compliant` configurations, 2 to 3 and 4 to 4 in `default`
+  with `system`, and stay 2 and 4 for Haiku 4.5 `operator`; utility under attack in `args` falls
+  88 to 69 (`system`), 88 to 71 (`notice`), 88 to 63 (`default`, `system`), 50 to 41 (`operator`),
+  55 to 54 (Haiku). The README, "Egress rule", has the full table. Adding the senders' domains to
+  `egress.allowed_hosts` removes these blocks.

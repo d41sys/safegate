@@ -971,6 +971,7 @@ def _tool_eval_llm(args: argparse.Namespace, policy: ToolPolicy | None) -> int:
             # experiment 3 (other models, payload styles, screening): one cache file per model
             cache_name = f"weak/{model}-dev.jsonl" if args.dev else f"weak/{model}.jsonl"
         client = _llm_client(args, model, cache_name)
+        recorded = load_tool_policy(Path(args.recorded_under)) if args.recorded_under else None
         if args.dev:
             for run in run_dev(client, policy):
                 print(json.dumps(run.to_json()))
@@ -983,6 +984,7 @@ def _tool_eval_llm(args: argparse.Namespace, policy: ToolPolicy | None) -> int:
             system=PROMPTS[args.agent_prompt],
             payload_style=args.payload_style,
             screen=args.screen,
+            recorded_under=recorded,
         )
     except (OSError, ValueError, LLMError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1373,6 +1375,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_teval.add_argument("--llm-cache", help="response cache file (default data/llm_cache/...)")
     p_teval.add_argument(
         "--llm-offline", action="store_true", help="read the cache only: no key, no network"
+    )
+    p_teval.add_argument(
+        "--recorded-under",
+        help="with --agent --llm-offline: the tool policy YAML the cache was recorded under. "
+        "The model-visible tool results come from it, so every recorded request is found; "
+        "the scores come from --policy (counterfactual re-score: the model never saw the "
+        "refusals that only --policy issues)",
     )
     p_teval.add_argument(
         "--dev", action="store_true", help="with --agent: the three dev cases (plumbing check)"

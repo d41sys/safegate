@@ -19,9 +19,9 @@ refused or escalated to a human.
 Limits, by design:
 
 * Text-only attacks are out of scope of the per-call checks: a poisoned summary or a phishing
-  link in the reply makes no tool call. The opt-in ``egress`` block covers the link case
-  deterministically (``check_egress_text``): every host named in the reply (or in a text
-  argument marked ``scan_hosts``) must be allow-listed or must already appear in the owner's
+  link in the reply makes no tool call. The ``egress`` block (on in the default policy) covers
+  the link case deterministically (``check_egress_text``): every host named in the reply (or in a
+  text argument marked ``scan_hosts``) must be allow-listed or must already appear in the owner's
   own text. It says nothing about false claims without a link.
 * When the user legitimately routes untrusted data into an argument the policy allows
   (``untrusted: allow``), the gate checks bounds, not truth, as ``spec.py`` does.

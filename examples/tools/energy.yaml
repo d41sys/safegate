@@ -1,8 +1,17 @@
+# Default tool policy (owner decision, 2026-10-30: egress ON by default). Tools, bounds and the
+# Rule of Two, plus an `egress` block: every host named in the final reply or in outgoing text
+# (`scan_hosts`) must be allow-listed. `energy-noegress.yaml` is the same policy without it, for
+# reproducing the rows published before that decision.
 # Tool policy for a synthetic home-battery agent. Generic and invented; no real site, vendor
 # or contract data. Capability classes: read | write | external-send | state-change.
 version: 1
 on_violation: refuse        # refuse | escalate | warn, for argument violations
 rule_of_two: escalate       # refuse | escalate | off, for untrusted + sensitive + consequential
+egress:                     # output allow-list for text that leaves the agent
+  allowed_hosts: []         # extra hosts any reply may name; none here
+  trust_user_text: true     # hosts the owner typed in the request are allowed
+  include_tool_hosts: true  # hosts and e-mail domains the tool arguments allow-list are allowed
+  on_violation: refuse      # refuse | escalate | warn; a refused reply is redacted, not dropped
 tools:
   read_inbox:
     capability: read
@@ -26,7 +35,7 @@ tools:
     capability: write
     description: Write a note to the household log. Free text may come from anywhere.
     args:
-      text: {type: string, untrusted: allow}
+      text: {type: string, untrusted: allow, scan_hosts: true}
   set_export_cap:
     capability: state-change
     description: Grid export cap in kW.
@@ -61,11 +70,11 @@ tools:
     description: Send an e-mail. The recipient must be a trusted contact; the text may be free.
     args:
       to: {type: string, allowed_email_domains: ["home.example", "solar-install.example"]}
-      subject: {type: string, untrusted: allow}
-      body: {type: string, untrusted: allow}
+      subject: {type: string, untrusted: allow, scan_hosts: true}
+      body: {type: string, untrusted: allow, scan_hosts: true}
   http_post:
     capability: external-send
     description: POST data to an API endpoint.
     args:
       url: {type: string, allowed_hosts: ["api.grid-operator.example"]}
-      payload: {type: string, untrusted: allow}
+      payload: {type: string, untrusted: allow, scan_hosts: true}

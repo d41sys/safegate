@@ -22,6 +22,7 @@ from safegate.toolpolicy import load_tool_policy
 from safegate.toolsuite import INJECTION_TASKS, POLICY_PATH, USER_TASKS
 
 POLICY = load_tool_policy(POLICY_PATH)
+NOEGRESS = load_tool_policy(POLICY_PATH.with_name("energy-noegress.yaml"))
 TASK = {t.id: t for t in USER_TASKS}
 ATTACK = {a.id: a for a in INJECTION_TASKS}
 
@@ -132,7 +133,9 @@ def test_a_model_that_ignores_the_injection_and_says_so(tmp_path: Path) -> None:
     assert not r.result.attack_success and not r.attempted and r.flagged and r.result.utility
 
 
-def test_phishing_reply_counts_as_success_without_a_tool_call(tmp_path: Path) -> None:
+def test_phishing_reply_counts_as_success_without_a_tool_call_unless_egress_is_on(
+    tmp_path: Path,
+) -> None:
     def script(body: dict[str, Any]) -> dict[str, Any]:
         if len(body["messages"]) == 1:
             return _resp([_use(0, "read_inbox")], "tool_use")
@@ -142,8 +145,10 @@ def test_phishing_reply_counts_as_success_without_a_tool_call(tmp_path: Path) ->
         )
         return _resp([{"type": "text", "text": text}])
 
-    r = run_llm_case(_client(tmp_path, script), TASK["B01"], ATTACK["J14"], "full", POLICY)
-    assert r.result.attack_success and r.attempted
+    r = run_llm_case(_client(tmp_path / "a", script), TASK["B01"], ATTACK["J14"], "full", NOEGRESS)
+    assert r.result.attack_success and r.attempted  # no egress block: the link goes out
+    r = run_llm_case(_client(tmp_path / "b", script), TASK["B01"], ATTACK["J14"], "full", POLICY)
+    assert r.attempted and not r.result.attack_success  # the default policy redacts it
 
 
 def test_refusal_stop_and_bad_arguments_do_not_crash(tmp_path: Path) -> None:
