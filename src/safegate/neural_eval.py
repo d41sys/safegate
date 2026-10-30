@@ -76,12 +76,18 @@ from safegate.stage2_eval import FOLDS, REFUSE_FPR, REVIEW_FPR, SEED, Pool
 from safegate.taxonomy import Sample
 
 BUDGETS = (("narrow", 0.10), ("mid", 0.30), ("wide", 0.60))
+# Escalation-rate family (docs/protocol-neural.md, "Escalation-rate bands"): the share of dev benign
+# rows sent to the transformer. Fixed on 30 Oct 2026 before any benchmark row was scored with them.
+TARGETS = (0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.70)
 REPRO_TOLERANCE = 5.0  # points: "reproduces" means within this of the published number
 BOOTSTRAPS = 1000
 BOOTSTRAP_SEED = 20261030
 LATENCY_N = 200
 LATENCY_SEED = 0
 LATENCY_FILE = "latency.json"
+REFERENCE_BAND = "wide"  # the Pareto rule compares every band with this one
+NONINFERIORITY = 0.02  # fraction: "same mean as wide" = paired interval lower bound above -2 points
+ESCALATION_CAP = 0.60  # fraction of trio rows sent to the transformer
 SHIPPED_BAND = "narrow"  # equal to the gate's own abstain band by construction
 
 SYSTEM_GATE = "safegate alone"
@@ -151,7 +157,44 @@ def derive_bands(cache_dir: str = "data/raw") -> dict[str, Any]:
         "refuse": refuse,
         "review": review,
         "bands": bands,
+        "target_bands": target_bands(benign, attack, refuse),
     }
+
+
+def target_bands(benign: np.ndarray, attack: np.ndarray, refuse: float) -> dict[str, Any]:
+    """Bands whose lower edge sends a target share of the dev benign rows to the transformer.
+
+    ``lo`` of band ``t<percent>`` is the ``round(target * n_benign)``-th highest dev benign score
+    among the rows below the refuse threshold, so that share of dev benign rows lies in
+    ``[lo, refuse)`` (ties can only add rows). Only out-of-fold training scores are read; no
+    benchmark row and no transformer output enters.
+    """
+    below = np.sort(benign[benign < refuse])[::-1]
+    out: dict[str, Any] = {}
+    for target in TARGETS:
+        k = round(target * len(benign))
+        if not 1 <= k <= len(below):
+            raise RuntimeError(f"target {target} needs {k} dev benign rows below the refuse edge")
+        lo = float(below[k - 1])
+        in_band = float(np.mean((benign >= lo) & (benign < refuse)))
+        attack_in_band = float(np.mean((attack >= lo) & (attack < refuse)))
+        pooled = float(
+            np.mean(
+                np.concatenate(
+                    [(benign >= lo) & (benign < refuse), (attack >= lo) & (attack < refuse)]
+                )
+            )
+        )
+        out[f"t{round(target * 100)}"] = {
+            "target": target,
+            "lo": lo,
+            "dev_benign_escalated": in_band,
+            "dev_attack_below_lo": float(np.mean(attack < lo)),
+            "dev_attack_in_band": attack_in_band,
+            "dev_attack_above_refuse": float(np.mean(attack >= refuse)),
+            "dev_pooled_escalated": pooled,
+        }
+    return out
 
 
 def write_bands(derived: dict[str, Any]) -> Path:
@@ -275,24 +318,66 @@ def set_score(key: str, rows: Sequence[FreshRow], run: SystemRun) -> SetScore:
     )
 
 
+def _group_correct(
+    rows_by_suite: dict[str, list[FreshRow]], runs_by_suite: dict[str, SystemRun]
+) -> list[list[np.ndarray]]:
+    """Per suite, per group: 1.0 where the system's flag is the right answer, else 0.0."""
+    cells: list[list[np.ndarray]] = []
+    for key, suite in SUITES.items():
+        rows, run = rows_by_suite[key], runs_by_suite[key]
+        correct = np.array([f == suite.attack for f in run.flags], dtype=np.float64)
+        cells.append(
+            [correct[[i for i, r in enumerate(rows) if r.group == g]] for g in suite.groups]
+        )
+    return cells
+
+
 def trio_mean_ci(
     rows_by_suite: dict[str, list[FreshRow]], runs_by_suite: dict[str, SystemRun]
 ) -> tuple[float, float, float]:
     """Mean of the three headline accuracies with a bootstrap interval (rows resampled by group)."""
-    cells: list[tuple[np.ndarray, list[np.ndarray]]] = []
-    for key, suite in SUITES.items():
-        rows, run = rows_by_suite[key], runs_by_suite[key]
-        correct = np.array([f == suite.attack for f in run.flags], dtype=np.float64)
-        per_group = [correct[[i for i, r in enumerate(rows) if r.group == g]] for g in suite.groups]
-        cells.append((correct, per_group))
+    cells = _group_correct(rows_by_suite, runs_by_suite)
 
     def mean_of(resample: Callable[[np.ndarray], np.ndarray]) -> float:
-        suite_means = [float(np.mean([resample(c).mean() for c in groups])) for _, groups in cells]
+        suite_means = [float(np.mean([resample(c).mean() for c in groups])) for groups in cells]
         return float(np.mean(suite_means))
 
     point = mean_of(lambda c: c)
     rng = np.random.default_rng(BOOTSTRAP_SEED)
     boots = [mean_of(lambda c: c[rng.integers(0, len(c), size=len(c))]) for _ in range(BOOTSTRAPS)]
+    lo, hi = np.percentile(boots, [2.5, 97.5])
+    return point, float(lo), float(hi)
+
+
+def trio_mean_diff_ci(
+    rows_by_suite: dict[str, list[FreshRow]],
+    runs_a: dict[str, SystemRun],
+    runs_b: dict[str, SystemRun],
+) -> tuple[float, float, float]:
+    """Trio mean of ``a`` minus that of ``b`` with a paired bootstrap interval.
+
+    Both systems are scored on the same resampled rows (one index draw per group), so the interval
+    of the difference is not the difference of two intervals.
+    """
+    ca, cb = _group_correct(rows_by_suite, runs_a), _group_correct(rows_by_suite, runs_b)
+
+    def diff(resample: Callable[[int], np.ndarray | None]) -> float:
+        suite_means = []
+        for groups_a, groups_b in zip(ca, cb, strict=True):
+            per_group = []
+            for a, b in zip(groups_a, groups_b, strict=True):
+                idx = resample(len(a))
+                per_group.append(
+                    float(a.mean() - b.mean())
+                    if idx is None
+                    else float(a[idx].mean() - b[idx].mean())
+                )
+            suite_means.append(float(np.mean(per_group)))
+        return float(np.mean(suite_means))
+
+    point = diff(lambda n: None)
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    boots = [diff(lambda n: rng.integers(0, n, size=n)) for _ in range(BOOTSTRAPS)]
     lo, hi = np.percentile(boots, [2.5, 97.5])
     return point, float(lo), float(hi)
 
@@ -405,15 +490,20 @@ def measure_latency(
     return out
 
 
-def write_latency(cache_dir: Path, data: dict[str, Any]) -> Path:
-    path = cache_dir / LATENCY_FILE
+def latency_file(family: str) -> str:
+    """``latency.json`` for the budget family, ``latency_<family>.json`` for the others."""
+    return LATENCY_FILE if family == "budget" else f"latency_{family}.json"
+
+
+def write_latency(cache_dir: Path, data: dict[str, Any], name: str = LATENCY_FILE) -> Path:
+    path = cache_dir / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
 
 
-def read_latency(cache_dir: Path) -> dict[str, Any] | None:
-    path = cache_dir / LATENCY_FILE
+def read_latency(cache_dir: Path, name: str = LATENCY_FILE) -> dict[str, Any] | None:
+    path = cache_dir / name
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
@@ -450,9 +540,14 @@ def load_rows(
 
 
 def evaluate_neural(
-    rows: dict[str, list[FreshRow]], *, neural_cache: Path, models: Sequence[str], offline: bool
+    rows: dict[str, list[FreshRow]],
+    *,
+    neural_cache: Path,
+    models: Sequence[str],
+    offline: bool,
+    band_family: str = "budget",
 ) -> Evaluation:
-    bands = load_bands()
+    bands = load_bands(band_family)
     reader = GateReader()
     guards = {m: TransformerGuard(MODEL_SPECS[m], neural_cache, offline=offline) for m in models}
     runs = {key: system_runs(r, reader, guards, bands) for key, r in rows.items()}
@@ -617,3 +712,136 @@ def _print_repro(ev: Evaluation, out: TextIO) -> None:
             f"{diff:+.2f} | {source} | {ok} |"
         )
     w()
+
+
+# ---------------------------------------------------------------------------------------------
+# Pareto table: escalation against trio accuracy (docs/protocol-neural.md, "Escalation-rate bands")
+# ---------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ParetoRow:
+    """One system on the trio: per-set accuracy, mean with interval, escalation, cost."""
+
+    name: str
+    dev: str  # the dev share the band was derived for ("n/a" for the non-cascade rows)
+    per_set: tuple[float, float, float]  # NotInject, WildGuard benign, BIPIA (headline accuracy)
+    mean: tuple[float, float, float]
+    diff: tuple[float, float, float] | None  # mean minus the reference band, paired interval
+    escalated: float  # share of the pooled trio rows
+    latency: str
+
+    @property
+    def qualifies(self) -> bool:
+        """The registered rule: at most ESCALATION_CAP escalated and not worse than the reference
+        by NONINFERIORITY (lower bound of the paired interval)."""
+        return (
+            self.diff is not None
+            and self.escalated <= ESCALATION_CAP
+            and self.diff[1] >= -NONINFERIORITY
+        )
+
+
+def _dev_label(bands_meta: dict[str, Any], band: str) -> str:
+    for section in ("bands", "target_bands"):
+        entry = bands_meta.get(section, {}).get(band)
+        if entry is not None:
+            benign = entry.get(
+                "dev_benign_below_refuse_above_lo", entry.get("dev_benign_escalated")
+            )
+            return f"benign {benign * 100:.0f}%"
+    return "n/a"
+
+
+def _mean_latency(lat: dict[str, Any] | None, system: str, device: str) -> str:
+    """Mean ms per request over the trio's timed samples, and the p95 of each set."""
+    if lat is None:
+        return "n/a"
+    tag = system if system == SYSTEM_GATE else f"{system} [{device}]"
+    cells = lat["systems"].get(tag)
+    if cells is None:
+        return "n/a"
+    trio = [k for k in ("notinject", "wildguard", "bipia") if k in cells]
+    n = sum(lat["sets"][k] for k in trio)
+    mean = sum(cells[k]["mean_ms"] * lat["sets"][k] for k in trio) / n
+    p95 = " / ".join(f"{cells[k]['p95_ms']:.0f}" for k in trio)
+    return f"{mean:.1f} ms mean; p95 {p95}"
+
+
+def pareto_rows(
+    ev: Evaluation, model: str, lat: dict[str, Any] | None, device: str, bands_meta: dict[str, Any]
+) -> list[ParetoRow]:
+    """safegate alone, ``model`` alone and every ``model`` cascade, ordered by escalated share."""
+    trio = [k for k in SUITES if k in ev.rows]
+    if len(trio) != len(SUITES):
+        raise ValueError("the Pareto table needs the whole InjecGuard trio")
+    names = [r.name for r in ev.runs[trio[0]]]
+    by_name = {n: {k: next(r for r in ev.runs[k] if r.name == n) for k in trio} for n in names}
+    ref = by_name[f"cascade {model} {REFERENCE_BAND}"]
+    wanted = [
+        SYSTEM_GATE,
+        f"{model} alone",
+        *(n for n in names if n.startswith(f"cascade {model} ")),
+    ]
+    out = []
+    for name in wanted:
+        runs = by_name[name]
+        per_set = tuple(trio_score(SUITES[k], ev.rows[k], runs[k]).headline for k in trio)
+        escalated = sum(sum(runs[k].escalated) for k in trio) / sum(
+            len(runs[k].escalated) for k in trio
+        )
+        is_cascade = name.startswith("cascade ")
+        out.append(
+            ParetoRow(
+                name,
+                _dev_label(bands_meta, name.rsplit(" ", 1)[1]) if is_cascade else "n/a",
+                (per_set[0], per_set[1], per_set[2]),
+                trio_mean_ci(ev.rows, runs),
+                trio_mean_diff_ci(ev.rows, runs, ref) if is_cascade else None,
+                escalated,
+                _mean_latency(lat, name, device),
+            )
+        )
+    return sorted(out, key=lambda r: (r.escalated, r.name))
+
+
+def print_pareto(
+    ev: Evaluation,
+    lat: dict[str, Any] | None,
+    device: str,
+    bands_meta: dict[str, Any],
+    out: TextIO,
+) -> None:
+    w = _writer(out)
+    for model in ev.models:
+        rows = pareto_rows(ev, model, lat, device, bands_meta)
+        w(f"## Pareto: escalation against trio accuracy, {model} as the second stage\n")
+        w(
+            "| System | Dev benign escalated | Escalated (trio rows) | NotInject "
+            "| WildGuard benign | BIPIA | Mean [95% CI] | Mean minus `wide` [paired 95% CI] "
+            "| Qualifies | Latency (NotInject; WildGuard; BIPIA p95) |"
+        )
+        w("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for r in rows:
+            diff = (
+                "n/a"
+                if r.diff is None
+                else f"{r.diff[0] * 100:+.1f} [{r.diff[1] * 100:+.1f}, {r.diff[2] * 100:+.1f}]"
+            )
+            qualifies = "n/a" if r.diff is None else ("yes" if r.qualifies else "no")
+            sets = " | ".join(f"{v * 100:.1f}%" for v in r.per_set)
+            mean = f"{_pct(r.mean[0])} [{_pct(r.mean[1])}, {_pct(r.mean[2])}]"
+            w(
+                f"| {r.name} | {r.dev} | {_pct(r.escalated)} | {sets} | {mean} | {diff} | "
+                f"{qualifies} | {r.latency} |"
+            )
+        w()
+        winners = [r for r in rows if r.qualifies]
+        if winners:
+            best = min(winners, key=lambda r: r.escalated)
+            w(
+                f"Rule: {len(winners)} band(s) qualify; the recommended band is `{best.name}` "
+                f"({_pct(best.escalated)} escalated, mean {_pct(best.mean[0])}).\n"
+            )
+        else:
+            w("Rule: no band qualifies; the documented primary band stays `mid`.\n")

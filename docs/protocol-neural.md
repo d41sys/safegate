@@ -516,3 +516,93 @@ Within = absolute difference at most 5 points (F1, AUC and TPR in points of 100)
 | protectai | jbb | ROC AUC | 55.72 | 51.30 | +4.42 | ProtectAI v2 (184M), benchmark maintainer | yes |
 | protectai | gandalf_test | recall of the attack class at the guard's own decision | 100.00 | 100.00 | +0.00 | ProtectAI v2 (any-guardrail `protectai`), Mozilla.ai | yes |
 
+
+## Escalation-rate bands: a Pareto map of cost against accuracy (K-S1b, post-hoc)
+
+Fixed on 30 Oct 2026, **after** the scored K-S1 run above and **before** any of the bands below was
+scored on a benchmark row. No API call and no new model run: every transformer probability is already
+in `data/neural_cache/`, so the scoring is a replay (`$0`).
+
+**This is post-hoc.** The bands, the grid, the cap and the margin below were chosen after seeing that
+`mid` escalates 40.1% of the trio rows for a mean of 73.9%, and `wide` 86.1% for 77.7%. The question
+"is there a band between them that keeps most of the accuracy for less traffic?" exists because of
+those two results, so the trio is not a clean test for the band that comes out best: whatever the
+table shows is a **post-hoc sensitivity analysis**, not a held-out confirmation. What is kept clean:
+every edge `lo` comes from out-of-fold stage-2 scores of the training rows only (the derivation of
+`--derive-bands`, same rows as before), and the rule that would change the documented primary band is
+fixed here, before scoring. The nine further sets are not part of the rule.
+
+### Band family
+
+A band `t<percent>` has the lower edge `lo` at which **`<percent>` of the dev benign rows are sent to
+the transformer** (stage-2 score at or above `lo` and below the refuse threshold), out of fold. Edge
+rule: `lo` is the `round(target * n_benign)`-th highest dev benign score among those below the refuse
+threshold (`neural_eval.target_bands`). It differs from the `budget` family only in what the number
+means: a `budget` of 30% counts every dev benign row at or above `lo`, refused ones included (28.0%
+reach the model), a `target` of 30% would count the ones that reach it. The targets are
+**35, 40, 45, 50, 55, 60 and 70%**. The ask named 50, 60 and 70%; 35, 40, 45 and 55% fill the gap
+between the shipped `mid` (dev 28.0%) and `wide` (dev 58.0%), where the trio escalation lies between
+40% and 86%. Dev shares out of fold (2,858 benign and 2,375 attack rows; written to
+`src/safegate/data/neural_bands.json` under `target_bands`; the existing three bands are unchanged,
+checked by re-running the derivation):
+
+| Band | `lo` | Dev benign escalated | Dev attacks passed (below `lo`) | Dev attacks escalated | Dev rows escalated (benign and attack pooled) |
+| --- | --- | --- | --- | --- | --- |
+| `t35` | 0.4580 | 35.0% | 7.0% | 42.1% | 38.2% |
+| `t40` | 0.4510 | 40.0% | 4.9% | 44.2% | 41.9% |
+| `t45` | 0.4437 | 45.0% | 3.2% | 45.9% | 45.4% |
+| `t50` | 0.4354 | 50.0% | 2.3% | 46.8% | 48.5% |
+| `t55` | 0.4278 | 55.0% | 1.9% | 47.2% | 51.5% |
+| `t60` | 0.4187 | 60.0% | 1.4% | 47.7% | 54.4% |
+| `t70` | 0.3923 | 70.0% | 0.5% | 48.6% | 60.3% |
+
+In pooled terms, which is another way to read "target escalation rate", the 50%, 60% and 70% of the
+ask are about `t55`, `t70` and beyond the family (pooled escalation cannot pass 1 minus the refused
+share, 49% of dev attacks plus a few benign rows). The trio is mostly benign traffic that scores
+high, so its actual escalation is far above any dev share (K-S1: dev 28.0% and 58.0% gave 40.1% and
+86.1%); the actual share on the benchmark is therefore reported next to the dev share and is
+**never** used to move an edge.
+
+### Reported
+
+For the PIGuard cascade at every band (ProtectAI is printed too, with the same rule): per-set
+accuracy (NotInject, WildGuard benign, BIPIA), the trio mean with the 95% bootstrap interval of
+K-S1 (1,000 resamples, seed 20261030), the mean minus that of `wide` with a **paired** bootstrap
+interval (same resampled rows for both systems), the share of trio rows escalated, and latency from
+`data/neural_cache/latency_all.json` (gate, PIGuard alone and the ten PIGuard cascades timed in one
+pass on the same 200-row seeded samples as K-S1, MPS; mean per request and p95 per set). Command:
+`uv run safegate neural-eval --suite injecguard --bands all --pareto --offline`; latency:
+`uv run safegate neural-eval --suite all --bands all --models piguard --devices mps --latency`.
+
+### Rule that would change the documented primary band (fixed before scoring)
+
+A band **qualifies** when both hold on the trio:
+
+1. **Cost.** At most 60% of the pooled trio rows are escalated.
+2. **Same mean as `wide`.** The lower bound of the paired 95% interval of (band mean minus `wide`
+   mean) is at least -2.0 points. A weaker reading, "the two mean intervals overlap", is printed in
+   the full output for comparison but is not the rule: `mid`'s interval [71.0%, 76.7%] already
+   overlaps `wide`'s [75.2%, 80.1%] and it would pass a rule that only asks for overlap.
+
+If at least one band qualifies, the **qualifying band with the lowest escalation** becomes the
+primary band named in the README; if none does, `mid` stays primary and the table is reported as a
+Pareto map. Either way **nothing in the gate, the CLI defaults or the shipped model changes**: the
+cascade is an evaluation (`safegate neural-eval`), not part of `SafetyGate`, and a band is a choice
+of the person who wires the transformer in. The margin of 2 points and the 60% cap are the ask's
+numbers and a round margin, not fitted.
+
+### Predictions (written before scoring)
+
+| # | Prediction |
+| --- | --- |
+| Q1 | Trio escalation grows with the target (the bands nest, so it cannot fall) and lands, by interpolating the K-S1 pair of dev and actual shares: `t35` 43-59%, `t40` 50-66%, `t45` 58-74%, `t50` 65-81%, `t55` 72-88%, `t60` 79-94%, `t70` 87-100% |
+| Q2 | Accuracy on BIPIA rises with the target toward PIGuard alone (62.4% pooled, 68.3% as the mean of text and code); the two benign sets fall toward PIGuard alone (88.5% and 76.1%). The trio mean from `t40` upward is between `mid` (73.9%) and `wide` (77.7%); at `t60` and `t70` it is within 1 point of `wide` |
+| Q3 | **No band qualifies.** The BIPIA gain is the part that costs traffic, so the paired lower bound against `wide` stays below -2 points for every band with at most 60% escalated, and `mid` stays primary. My confidence is about 60%; the main way it fails is a knee near `t40` to `t45` at 55-60% escalation |
+| Q4 | Latency: the cascade's p50 equals the gate's (0.2-2.4 ms) while fewer than half the rows are escalated (NotInject up to about `t45`, not BIPIA from `t35` onward) and the transformer's (17-25 ms) after; p95 is the transformer's for every band |
+| Q5 | ProtectAI: no band qualifies and none beats safegate alone by more than the interval above `t45` (K-S1: ProtectAI `mid` is below safegate alone) |
+
+### Disclosure
+
+Seen before this section: the K-S1 results of every system and band on all twelve sets (above), the
+README tables, and the dev shares printed by `--derive-bands` for the new family. Not seen: the trio
+or any set under the new `lo` values. The grid was not tuned on the dev shares.

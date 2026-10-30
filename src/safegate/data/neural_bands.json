@@ -29,5 +29,70 @@
       "dev_attack_in_band": 0.47410526315789475,
       "dev_attack_above_refuse": 0.5090526315789474
     }
+  },
+  "target_bands": {
+    "t35": {
+      "target": 0.35,
+      "lo": 0.45804836260782805,
+      "dev_benign_escalated": 0.34989503149055284,
+      "dev_attack_below_lo": 0.0703157894736842,
+      "dev_attack_in_band": 0.4206315789473684,
+      "dev_attack_above_refuse": 0.5090526315789474,
+      "dev_pooled_escalated": 0.38199885343015477
+    },
+    "t40": {
+      "target": 0.4,
+      "lo": 0.45104632857806326,
+      "dev_benign_escalated": 0.3999300209937019,
+      "dev_attack_below_lo": 0.04926315789473684,
+      "dev_attack_in_band": 0.4416842105263158,
+      "dev_attack_above_refuse": 0.5090526315789474,
+      "dev_pooled_escalated": 0.4188801834511752
+    },
+    "t45": {
+      "target": 0.45,
+      "lo": 0.44374541597422373,
+      "dev_benign_escalated": 0.44996501049685095,
+      "dev_attack_below_lo": 0.03242105263157895,
+      "dev_attack_in_band": 0.45852631578947367,
+      "dev_attack_above_refuse": 0.5090526315789474,
+      "dev_pooled_escalated": 0.4538505637301739
+    },
+    "t50": {
+      "target": 0.5,
+      "lo": 0.43544481715591,
+      "dev_benign_escalated": 0.5,
+      "dev_attack_below_lo": 0.023157894736842106,
+      "dev_attack_in_band": 0.46778947368421053,
+      "dev_attack_above_refuse": 0.5090526315789474,
+      "dev_pooled_escalated": 0.4853812344735333
+    },
+    "t55": {
+      "target": 0.55,
+      "lo": 0.427765893967466,
+      "dev_benign_escalated": 0.5500349895031491,
+      "dev_attack_below_lo": 0.018526315789473686,
+      "dev_attack_in_band": 0.47242105263157896,
+      "dev_attack_above_refuse": 0.5090526315789474,
+      "dev_pooled_escalated": 0.5148098605006688
+    },
+    "t60": {
+      "target": 0.6,
+      "lo": 0.4187153762398351,
+      "dev_benign_escalated": 0.6000699790062981,
+      "dev_attack_below_lo": 0.013894736842105264,
+      "dev_attack_in_band": 0.4770526315789474,
+      "dev_attack_above_refuse": 0.5090526315789474,
+      "dev_pooled_escalated": 0.5442384865278043
+    },
+    "t70": {
+      "target": 0.7,
+      "lo": 0.39227357078840785,
+      "dev_benign_escalated": 0.7001399580125962,
+      "dev_attack_below_lo": 0.0046315789473684215,
+      "dev_attack_in_band": 0.4863157894736842,
+      "dev_attack_above_refuse": 0.5090526315789474,
+      "dev_pooled_escalated": 0.6030957385820753
+    }
   }
 }

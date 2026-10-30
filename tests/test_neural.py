@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from safegate.fresh import FreshRow
@@ -25,11 +26,13 @@ from safegate.neural import (
     text_key,
 )
 from safegate.neural_eval import (
+    TARGETS,
     GateReader,
     SystemRun,
     percentile,
     set_score,
     system_runs,
+    target_bands,
     trio_published,
 )
 
@@ -76,6 +79,69 @@ def test_shipped_bands_nest_and_the_narrow_one_is_the_gates_abstain_band() -> No
         Path(str(resources.files("safegate").joinpath("data/stage2_v2.npz")))
     ).thresholds
     assert bands["narrow"].lo == pytest.approx(shipped.review, abs=1e-6)
+
+
+def test_target_bands_nest_and_send_the_target_share_of_dev_benign_rows() -> None:
+    bands = load_bands("target")
+    assert list(bands) == [f"t{round(t * 100)}" for t in TARGETS]
+    los = [b.lo for b in bands.values()]
+    assert los == sorted(los, reverse=True)  # a higher target is a lower edge
+    assert load_bands("all").keys() == {"narrow", "mid", "wide", *bands}
+    from safegate.neural import load_bands_file
+
+    meta = load_bands_file()
+    for name, band in bands.items():
+        entry = meta["target_bands"][name]
+        assert entry["dev_benign_escalated"] == pytest.approx(band.budget, abs=0.001)
+        assert band.lo < meta["refuse"]
+    # the family sits between the shipped `mid` and `wide` edges up to 55%, as derived
+    assert load_bands()["mid"].lo > bands["t35"].lo > bands["t55"].lo > load_bands()["wide"].lo
+
+
+def test_target_band_edge_is_the_kth_highest_benign_score_below_refuse() -> None:
+    benign = np.linspace(0.0, 0.99, 100)  # 0.00, 0.01, ... 0.99; 80 of them below the edge 0.795
+    attack = np.array([0.2, 0.5, 0.9])
+    out = target_bands(benign, attack, refuse=0.795)
+    assert out["t35"]["lo"] == pytest.approx(0.45)  # the 35th highest of 0.79, 0.78, ...
+    assert out["t35"]["dev_benign_escalated"] == pytest.approx(0.35)
+    assert out["t35"]["dev_attack_in_band"] == pytest.approx(1 / 3)  # only the 0.5 attack
+    assert out["t70"]["lo"] == pytest.approx(0.10)
+    assert out["t70"]["dev_attack_in_band"] == pytest.approx(2 / 3)
+    assert out["t70"]["dev_attack_above_refuse"] == pytest.approx(1 / 3)
+    assert out["t70"]["dev_pooled_escalated"] == pytest.approx((70 + 2) / 103)
+    with pytest.raises(RuntimeError):
+        target_bands(benign, attack, refuse=0.005)  # one benign row below the edge: no 35% band
+
+
+def test_paired_difference_interval_is_tighter_than_the_difference_of_two_intervals() -> None:
+    from safegate.benchmark import SUITES
+    from safegate.neural_eval import trio_mean_ci, trio_mean_diff_ci
+
+    rows = {
+        k: [
+            FreshRow(k, g, f"{g} {i}", SUITES[k].attack)
+            for g in SUITES[k].groups
+            for i in range(30)
+        ]
+        for k in SUITES
+    }
+
+    def run(name: str, wrong: int) -> dict[str, SystemRun]:
+        out = {}
+        for k, r in rows.items():
+            right = SUITES[k].attack
+            flags = tuple(right if i % 30 >= wrong else not right for i, _ in enumerate(r))
+            out[k] = SystemRun(name, flags, (0.0,) * len(r), (False,) * len(r))
+        return out
+
+    a, b = run("a", 3), run("b", 6)  # a is wrong on 3 of 30 rows of each group, b on 6
+    point, lo, hi = trio_mean_diff_ci(rows, a, b)
+    assert point == pytest.approx(0.1, abs=1e-9)  # 90% against 80% in every group
+    assert lo <= point <= hi
+    pa, la, ha = trio_mean_ci(rows, a)
+    pb, lb, hb = trio_mean_ci(rows, b)
+    assert point == pytest.approx(pa - pb, abs=1e-9)
+    assert hi - lo < (ha - la) + (hb - lb)
 
 
 def test_score_store_round_trip(tmp_path: Path) -> None:

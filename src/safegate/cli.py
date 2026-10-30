@@ -89,13 +89,15 @@ from safegate.lodo import (
 )
 from safegate.mock_llm import MockStreamingLLM
 from safegate.neural import DEFAULT_CACHE_DIR as NEURAL_CACHE_DIR
-from safegate.neural import MODEL_SPECS, MissingScore, load_bands
+from safegate.neural import MODEL_SPECS, MissingScore, load_bands, load_bands_file
 from safegate.neural_eval import (
     derive_bands,
     evaluate_neural,
+    latency_file,
     load_rows,
     measure_latency,
     print_evaluation,
+    print_pareto,
     read_latency,
     write_bands,
     write_latency,
@@ -829,18 +831,25 @@ def cmd_neural_eval(args: argparse.Namespace) -> int:
                 rows,
                 GateReader(),
                 [MODEL_SPECS[m] for m in models],
-                load_bands(),
+                load_bands(args.bands),
                 cache,
                 [d.strip() for d in args.devices.split(",")],
                 args.latency_n,
             )
-            print(f"wrote {write_latency(cache, data)}", file=sys.stderr)
+            name = latency_file(args.bands)
+            print(f"wrote {write_latency(cache, data, name)}", file=sys.stderr)
             return 0
-        ev = evaluate_neural(rows, neural_cache=cache, models=models, offline=args.offline)
+        ev = evaluate_neural(
+            rows, neural_cache=cache, models=models, offline=args.offline, band_family=args.bands
+        )
     except MissingScore as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print_evaluation(ev, read_latency(cache), args.latency_device, sys.stdout)
+    lat = read_latency(cache, latency_file(args.bands))
+    if args.pareto:
+        print_pareto(ev, lat, args.latency_device, load_bands_file(), sys.stdout)
+    else:
+        print_evaluation(ev, lat, args.latency_device, sys.stdout)
     return 0
 
 
@@ -1274,6 +1283,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--latency",
         action="store_true",
         help="time gate, transformer and cascade; write latency.json",
+    )
+    p_neu.add_argument(
+        "--bands",
+        choices=("budget", "target", "all"),
+        default="budget",
+        help="band family: narrow/mid/wide (budget), t35..t70 (target, by dev escalation rate), "
+        "or both; --latency writes latency.json for budget, latency_<family>.json otherwise",
+    )
+    p_neu.add_argument(
+        "--pareto",
+        action="store_true",
+        help="print escalation against trio accuracy with paired intervals and the Pareto rule "
+        "(use with --bands all --suite injecguard)",
     )
     p_neu.add_argument("--latency-n", type=int, default=200, help="rows timed per set")
     p_neu.add_argument("--devices", default="mps,cpu", help="devices to time the transformer on")

@@ -331,9 +331,11 @@ def _load_cls_linear(path: str) -> Any:
 class Band:
     """A pre-registered escalation band.
 
-    ``budget`` is the share of dev benign rows allowed above ``lo`` (so it is the dev share of
-    benign traffic that reaches the transformer, apart from rows the gate already refuses);
-    ``lo`` is the stage-2 score at which a gate-allowed row is escalated.
+    ``budget`` is a dev share chosen in advance. In the ``budget`` family (``narrow``, ``mid``,
+    ``wide``) it is the share of dev benign rows allowed at or above ``lo`` (including rows the
+    gate refuses). In the ``target`` family (``t35`` ... ``t70``) it is the share of dev benign rows
+    sent to the transformer, that is, at or above ``lo`` and below the refuse threshold. ``lo`` is
+    the stage-2 score at which a gate-allowed row is escalated.
     """
 
     name: str
@@ -341,11 +343,29 @@ class Band:
     lo: float
 
 
-def load_bands() -> dict[str, Band]:
-    """The bands of ``src/safegate/data/neural_bands.json`` (``neural-eval --derive-bands``)."""
+BAND_FAMILIES = {"budget": ("bands", "budget"), "target": ("target_bands", "target")}
+
+
+def load_bands_file() -> dict[str, Any]:
+    """The whole of ``neural_bands.json``: the bands and the dev shares they were derived with."""
     path = Path(str(resources.files("safegate").joinpath(BANDS_FILE)))
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return {k: Band(k, float(v["budget"]), float(v["lo"])) for k, v in data["bands"].items()}
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return data
+
+
+def load_bands(family: str = "budget") -> dict[str, Band]:
+    """The bands of ``src/safegate/data/neural_bands.json`` (``neural-eval --derive-bands``).
+
+    ``family`` is ``budget`` (narrow, mid, wide), ``target`` (the escalation-rate family of
+    ``docs/protocol-neural.md``, "Escalation-rate bands") or ``all`` (both, budget first).
+    """
+    data = load_bands_file()
+    families = list(BAND_FAMILIES) if family == "all" else [family]
+    out: dict[str, Band] = {}
+    for fam in families:
+        section, field = BAND_FAMILIES[fam]
+        out.update({k: Band(k, float(v[field]), float(v["lo"])) for k, v in data[section].items()})
+    return out
 
 
 ROUTE_FLAG = "flag"
