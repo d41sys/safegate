@@ -88,6 +88,18 @@ from safegate.lodo import (
     shipped_split,
 )
 from safegate.mock_llm import MockStreamingLLM
+from safegate.neural import DEFAULT_CACHE_DIR as NEURAL_CACHE_DIR
+from safegate.neural import MODEL_SPECS, MissingScore, load_bands
+from safegate.neural_eval import (
+    derive_bands,
+    evaluate_neural,
+    load_rows,
+    measure_latency,
+    print_evaluation,
+    read_latency,
+    write_bands,
+    write_latency,
+)
 from safegate.payloads import ALL_STYLES, STRING_STYLES
 from safegate.perturb import homoglyph_unlisted, homoglyph_unseen, rng_for
 from safegate.refusal import RefusalEvaluator
@@ -793,6 +805,45 @@ def cmd_guard_dev(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_neural_eval(args: argparse.Namespace) -> int:
+    """Transformer guards alone and as stage 2 behind the pre-filter (docs/protocol-neural.md)."""
+    cache = Path(args.neural_cache)
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    unknown = [m for m in models if m not in MODEL_SPECS]
+    if unknown:
+        print(f"error: unknown model {unknown}; choose from {sorted(MODEL_SPECS)}", file=sys.stderr)
+        return 2
+    if args.derive_bands:
+        derived = derive_bands(args.cache_dir)
+        print(json.dumps(derived, indent=2))
+        print(f"wrote {write_bands(derived)}", file=sys.stderr)
+        return 0
+    suites, public = resolve_suites(args.suite)
+    keys = [s.key for s in suites] + list(public)
+    try:
+        rows = load_rows(keys, args.cache_dir, args.refresh)
+        if args.latency:
+            from safegate.neural_eval import GateReader
+
+            data = measure_latency(
+                rows,
+                GateReader(),
+                [MODEL_SPECS[m] for m in models],
+                load_bands(),
+                cache,
+                [d.strip() for d in args.devices.split(",")],
+                args.latency_n,
+            )
+            print(f"wrote {write_latency(cache, data)}", file=sys.stderr)
+            return 0
+        ev = evaluate_neural(rows, neural_cache=cache, models=models, offline=args.offline)
+    except MissingScore as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print_evaluation(ev, read_latency(cache), args.latency_device, sys.stdout)
+    return 0
+
+
 def cmd_window_eval(args: argparse.Namespace) -> int:
     """Windows 150:37:0 against the shipped defence on the fresh data; applies the fixed rule."""
     fresh = load_for_cli(args.cache_dir, args.refresh)
@@ -1196,6 +1247,40 @@ def build_parser() -> argparse.ArgumentParser:
         "--llm-offline", action="store_true", help="read the cache only: no key, no network"
     )
     p_gdev.set_defaults(func=cmd_guard_dev)
+
+    p_neu = sub.add_parser(
+        "neural-eval",
+        help="Transformer guards (optional [guard] extra) alone and behind the pre-filter",
+    )
+    p_neu.add_argument("--models", default="piguard,protectai", help="comma list of model keys")
+    p_neu.add_argument(
+        "--suite",
+        choices=(*SUITES, *SOTA_KEYS, "injecguard", "public", "all"),
+        default="all",
+        help="one set, `injecguard` (the paper's three), `public` (the further sets) or all",
+    )
+    p_neu.add_argument("--cache-dir", default="data/raw", help="dataset cache (gitignored)")
+    p_neu.add_argument("--neural-cache", default=str(NEURAL_CACHE_DIR), help="probability cache")
+    p_neu.add_argument("--refresh", action="store_true", help="re-download even if cached")
+    p_neu.add_argument(
+        "--offline", action="store_true", help="read cached probabilities only: no torch needed"
+    )
+    p_neu.add_argument(
+        "--derive-bands",
+        action="store_true",
+        help="derive the escalation bands on training data and write neural_bands.json",
+    )
+    p_neu.add_argument(
+        "--latency",
+        action="store_true",
+        help="time gate, transformer and cascade; write latency.json",
+    )
+    p_neu.add_argument("--latency-n", type=int, default=200, help="rows timed per set")
+    p_neu.add_argument("--devices", default="mps,cpu", help="devices to time the transformer on")
+    p_neu.add_argument(
+        "--latency-device", default="mps", help="device whose latency the tables print"
+    )
+    p_neu.set_defaults(func=cmd_neural_eval)
 
     p_win = sub.add_parser(
         "window-eval",

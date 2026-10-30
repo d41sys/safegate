@@ -1,0 +1,33 @@
+{
+  "derived_on": "out-of-fold stage-2 scores of the shipped pooled training rows (bundled + TRAIN splits of deepset, jailbreak, itw, neuralchemy); calibration rows = the public rows",
+  "n_dev_benign": 2858,
+  "n_dev_attack": 2375,
+  "refuse": 0.5704083029232376,
+  "review": 0.5186641965644007,
+  "bands": {
+    "narrow": {
+      "budget": 0.1,
+      "lo": 0.5186641965644007,
+      "dev_benign_below_refuse_above_lo": 0.07977606717984605,
+      "dev_attack_below_lo": 0.3031578947368421,
+      "dev_attack_in_band": 0.18778947368421053,
+      "dev_attack_above_refuse": 0.5090526315789474
+    },
+    "mid": {
+      "budget": 0.3,
+      "lo": 0.4678801195103828,
+      "dev_benign_below_refuse_above_lo": 0.27991602519244224,
+      "dev_attack_below_lo": 0.10652631578947368,
+      "dev_attack_in_band": 0.38442105263157894,
+      "dev_attack_above_refuse": 0.5090526315789474
+    },
+    "wide": {
+      "budget": 0.6,
+      "lo": 0.4226844016761741,
+      "dev_benign_below_refuse_above_lo": 0.5797760671798461,
+      "dev_attack_below_lo": 0.016842105263157894,
+      "dev_attack_in_band": 0.47410526315789475,
+      "dev_attack_above_refuse": 0.5090526315789474
+    }
+  }
+}

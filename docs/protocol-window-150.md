@@ -178,3 +178,21 @@ decides the default.
   are undetectable as text alone; `gandalf` is one attack style ("ignore previous instructions"
   variants); NotInject, WildGuard and `spml` benign are largely short. The attack pool is small
   enough that `padding` evasion intervals will be wide; the rule uses point estimates.
+
+## Owner decision (30 Oct 2026)
+
+The rule of A.4 returned "do not ship" for both gates: pooled benign FPR rises by 9.0 points on the
+default gate (20.1 on the legacy gate) against a bound of 5, while padding evasion falls by 33.0
+points (48.0). The owner decided to **keep the FPR budget at "at most 5 points"**. Consequences,
+recorded here so that no later reader has to infer them:
+
+* Windows stay **off** by default: `SHIPPED_WINDOWS` remains `None`; `--windows 150:37:0` stays an
+  explicit opt-in on every command.
+* The padding evasion of the shipped defence on the default gate, **60.9% (280/460)** of blocked
+  fresh attacks in one query, is **accepted**, not mitigated. It is the safegate analogue of the
+  "winning triggers are not obviously harmful" finding of Nasr et al. (docs/sota-review.md, 3.1), and
+  `README.md`, "Windows 150:37:0 on fresh data", states it.
+* The cascade of `docs/protocol-neural.md` keeps the pre-filter without windows for the same
+  reason; a transformer stage is the remedy this repository offers for long or padded text, at the
+  latency it measures.
+* No new window cell is scored: the fresh rows are spent for this decision (see the limits above).
