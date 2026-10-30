@@ -641,7 +641,9 @@ below -2 points (-15.0, -6.5, -4.0, -3.4). `t45`'s lower bound is -2.6; the firs
 `t50` (-1.2), and it escalates 76.5% of the rows. The weaker
 reading of the ask, "mean interval overlaps `wide`'s" at most 60% escalated, would admit `mid`,
 `t35` and `t40`; its cheapest member is `mid`, the band already primary, so both readings leave the
-primary band where it was.
+primary band where it was. **`t40`, the knee, is not adopted by rule** (-3.4 against the
+pre-registered -2.0); calling it the primary band now would be a post-hoc preference, and no code
+or default changed for it.
 
 Reading the map (this is the post-hoc part):
 
