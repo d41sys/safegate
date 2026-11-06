@@ -154,6 +154,13 @@ def test_missing_labels_fail_closed() -> None:
     assert d.metadata["labels"] == {"cap_kw": ["untrusted:unlabeled"]}
 
 
+def test_an_empty_label_set_fails_closed_like_a_missing_one() -> None:
+    d = _check("set_export_cap", {"cap_kw": 2.5}, {"cap_kw": []})
+    assert d.action == "refuse"
+    assert d.metadata["labels"] == {"cap_kw": ["untrusted:unlabeled"]}
+    assert flow.derive(2.5).labels == frozenset()  # a value derived from nothing has no label
+
+
 def test_allowed_untrusted_argument_still_checks_bounds() -> None:
     ok = _check("schedule_charge", {"start_hour": 2}, {"start_hour": ["untrusted:web"]})
     bad = _check("schedule_charge", {"start_hour": 31}, {"start_hour": ["untrusted:web"]})

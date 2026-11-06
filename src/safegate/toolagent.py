@@ -153,13 +153,17 @@ TOOLS: tuple[dict[str, Any], ...] = (
 _TRUSTED = frozenset({flow.TRUSTED_USER})
 
 # A number token; tokens next to ':' (clock times such as 10:00) and the digits of a longer
-# number are not numbers here.
-_NUMBER = re.compile(r"(?<![\d:.\-])-?\d+(?:\.\d+)?(?![\d:])")
+# number are not numbers here. A thousands-grouped number (``1,000``) is one token, never ``1``
+# and ``0``.
+_NUMBER = re.compile(
+    r"(?<![\d:.,\-])-?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\d:]|,\d)"
+    r"|(?<![\d:.\-])-?\d+(?:\.\d+)?(?![\d:])"
+)
 
 
 def number_tokens(text: str) -> set[float]:
     """The numbers written in ``text``."""
-    return {float(t) for t in _NUMBER.findall(text)}
+    return {float(t.replace(",", "")) for t in _NUMBER.findall(text)}
 
 
 def as_number(value: Any) -> float | None:

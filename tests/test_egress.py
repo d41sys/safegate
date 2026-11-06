@@ -121,6 +121,25 @@ def test_a_file_name_followed_by_a_path_is_a_host() -> None:
     assert _hosts("open evil.zip/x") == ["evil.zip"]
 
 
+def test_hosts_after_a_url_delimiter_in_the_user_info_are_found() -> None:
+    # a browser reads ``https://ok.example^@evil.example`` as user info ``ok.example^``, host evil
+    for ch in "^{}`[|\"<'()":
+        assert "evil.example" in _hosts(f"go https://tariff.provider.example{ch}@evil.example/x")
+
+
+def test_ideographic_full_stops_are_dots_and_spans_keep_their_offsets() -> None:
+    assert _hosts("visit evil\u3002example/verify") == ["evil.example"]
+    assert _hosts("visit evil\uff0eexample") == ["evil.example"]
+    text = "hi evil\u3002example/x."
+    ((start, end, _),) = hosts_in_text(text)
+    assert text[start:end] == "evil\u3002example/x"
+
+
+def test_a_bare_name_with_a_real_tld_that_looks_like_a_file_name_is_a_host() -> None:
+    for name in ("evil.zip", "evil.md", "evil.py"):
+        assert _hosts(f"open {name} now") == [name]
+
+
 def test_spans_cut_the_host_out_of_the_text() -> None:
     text = f"hi {PHISH}. bye"
     ((start, end, host),) = hosts_in_text(text)

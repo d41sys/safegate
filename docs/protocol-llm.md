@@ -75,7 +75,8 @@ this run, each with its labels (`policy.label_result`):
    `aggregator-backup`): label `trusted_user` only.
 2. Otherwise two traces, each adds labels:
    * *user trace*: a number equals a number token of the user message (tokens next to `:` such as
-     `10:00` are not numbers), or a string of at least one character occurs in the user message
+     `10:00` are not numbers; a thousands-grouped number such as `1,000` is the one token 1000,
+     fixed 2026-11-06, it was read as 1 and 0), or a string of at least one character occurs in the user message
      (case-insensitive): add `trusted_user`;
    * *result trace*: a number equals a number token of a result, or a string of at least three
      characters occurs in the text of a result: add that result's labels. Numeric strings count as
