@@ -127,12 +127,10 @@ def test_hosts_after_a_url_delimiter_in_the_user_info_are_found() -> None:
         assert "evil.example" in _hosts(f"go https://tariff.provider.example{ch}@evil.example/x")
 
 
-def test_ideographic_full_stops_are_dots_and_spans_keep_their_offsets() -> None:
-    assert _hosts("visit evil\u3002example/verify") == ["evil.example"]
-    assert _hosts("visit evil\uff0eexample") == ["evil.example"]
-    text = "hi evil\u3002example/x."
-    ((start, end, _),) = hosts_in_text(text)
-    assert text[start:end] == "evil\u3002example/x"
+def test_cjk_prose_with_ideographic_full_stops_is_not_a_host() -> None:
+    # a full-width full stop is not read as a dot: it ends a sentence in Chinese and Japanese
+    # (normalising it made every "付。这笔" a host and refused a whole Sonnet 5.5 reply, B09/J08)
+    assert _hosts("我没能付款。这笔金额来自 Invoice 5521 的邮件。\uff0e") == []
 
 
 def test_a_bare_name_with_a_real_tld_that_looks_like_a_file_name_is_a_host() -> None:

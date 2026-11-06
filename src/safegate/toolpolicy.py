@@ -122,8 +122,6 @@ _TEXT_BARE_RE = re.compile(
 # Dotted names that are file names, not hosts (``report.csv``). ``.zip``, ``.md`` and ``.py`` are
 # real top-level domains, so a bare ``evil.zip`` is a host and is not listed here.
 _FILE_SUFFIXES = frozenset({"csv", "json", "log", "pdf", "png", "jpg", "txt", "xml", "yaml", "yml"})
-# Dots a browser reads as ``.`` in a host (ideographic and full-width full stops).
-_DOT_VARIANTS = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": "."})
 UNPARSEABLE_HOST = "(unparseable)"
 REDACTION = "[link removed]"
 
@@ -627,10 +625,9 @@ def hosts_in_text(text: str) -> list[tuple[int, int, str]]:
     Finds URLs with a scheme (host after any ``user@``), e-mail addresses and ``@host`` (the
     domain; a URL such as ``https://ok.example^@evil.example`` ends at the ``^``, so the host
     after the ``@`` is found on its own) and bare dotted names (``evil.example/verify``; file
-    names such as ``report.csv`` are skipped). Ideographic and full-width full stops count as
-    dots. A scheme URL with no parseable host yields ``UNPARSEABLE_HOST``.
+    names such as ``report.csv`` are skipped). A scheme URL with no parseable host yields
+    ``UNPARSEABLE_HOST``.
     """
-    text = text.translate(_DOT_VARIANTS)  # same length: the spans still index the original
     found: list[tuple[int, int, str]] = []
     work = text
     for m in _TEXT_URL_RE.finditer(text):
