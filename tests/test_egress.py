@@ -43,6 +43,14 @@ EGRESS_PATH = POLICY_PATH  # the default policy has the egress block
 NOEGRESS_PATH = POLICY_PATH.with_name("energy-noegress.yaml")
 BASE = load_tool_policy(NOEGRESS_PATH)
 EGRESS = load_tool_policy(EGRESS_PATH)
+# the same tools as the default, without the egress rule: isolates what the egress block changes
+BASE_SESSION = replace(
+    BASE,
+    tools={
+        **BASE.tools,
+        "reboot_inverter": replace(BASE.tools["reboot_inverter"], untrusted_session="escalate"),
+    },
+)
 assert EGRESS.egress is not None
 # the default without ``internal_domains``: the policy as first made the default (2026-10-30)
 STRICT = replace(EGRESS, egress=replace(EGRESS.egress, internal_domains=()))
@@ -378,7 +386,7 @@ def _policy_for_suite(egress: dict[str, Any]) -> ToolPolicy:
 def test_no_false_block_on_any_benign_task() -> None:
     for task in USER_TASKS:
         for cond in CONDITIONS:
-            before = run_case(task, None, cond, BASE)
+            before = run_case(task, None, cond, BASE_SESSION)
             after = run_case(task, None, cond, EGRESS)
             assert after.utility == before.utility, (task.id, cond)
             assert after.blocked == before.blocked, (task.id, cond)  # the same, and not egress
@@ -391,7 +399,7 @@ def test_other_injections_are_unchanged_except_the_text_ones() -> None:
     for task in injectable_tasks():
         for attack in INJECTION_TASKS:
             for cond in CONDITIONS:
-                before = run_case(task, attack, cond, BASE)
+                before = run_case(task, attack, cond, BASE_SESSION)
                 after = run_case(task, attack, cond, EGRESS)
                 assert after.utility == before.utility, (task.id, attack.id, cond)
                 if after.attack_success != before.attack_success:
@@ -401,6 +409,7 @@ def test_other_injections_are_unchanged_except_the_text_ones() -> None:
 
 
 def test_the_default_policy_is_the_noegress_policy_plus_the_rule() -> None:
+    """The two files differ in the egress rule and in ``untrusted_session`` on the reboot."""
     assert BASE.egress is None and EGRESS.egress is not None
     assert BASE.tools.keys() == EGRESS.tools.keys()
     for name, spec in BASE.tools.items():
@@ -410,7 +419,13 @@ def test_the_default_policy_is_the_noegress_policy_plus_the_rule() -> None:
         }
         assert stripped == spec.args, name
         assert (other.capability, other.result_labels) == (spec.capability, spec.result_labels)
+        assert spec.untrusted_session == "allow"
+        assert other.untrusted_session == ("escalate" if name == "reboot_inverter" else "allow")
     assert (BASE.on_violation, BASE.rule_of_two) == (EGRESS.on_violation, EGRESS.rule_of_two)
+    assert BASE_SESSION.tools == {
+        **BASE.tools,
+        "reboot_inverter": replace(BASE.tools["reboot_inverter"], untrusted_session="escalate"),
+    }
 
 
 # --------------------------------------------------------------------------------------

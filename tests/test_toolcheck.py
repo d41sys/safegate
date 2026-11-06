@@ -82,6 +82,12 @@ def test_example_policy_loads() -> None:
     assert POLICY.tools["read_inbox"].result_labels == {"untrusted:email"}
     assert POLICY.tools["add_note"].args["text"].allow_untrusted is True
     assert POLICY.tools["set_export_cap"].args["cap_kw"].allow_untrusted is False
+    assert POLICY.tools["reboot_inverter"].untrusted_session == "escalate"
+    # off unless declared: schedule_charge allows untrusted arguments on purpose
+    assert POLICY.tools["schedule_charge"].untrusted_session == "allow"
+    assert all(
+        s.untrusted_session == "allow" for n, s in POLICY.tools.items() if n != "reboot_inverter"
+    )
 
 
 @pytest.mark.parametrize(
@@ -101,6 +107,9 @@ def test_example_policy_loads() -> None:
         "tools: {t: {capability: read, args: {a: {type: string, allowed_hosts: ['a b']}}}}",
         "tools: {t: {capability: read, result_labels: [secret]}}",
         "tools: {t: {capability: read, args: {a: {type: number, min: .nan}}}}",
+        "tools: {t: {capability: read, untrusted_session: escalate}}",
+        "tools: {t: {capability: write, untrusted_session: refuse}}",
+        "tools: {t: {capability: state-change, untrusted_session: maybe}}",
         "- a list",
     ],
 )
@@ -248,13 +257,14 @@ def test_on_violation_action_is_configurable() -> None:
 
 def test_rule_of_two_needs_all_three_legs() -> None:
     clean = {"labels": ["system"]}
-    call = ToolCall("reboot_inverter")
+    call = ToolCall("set_battery_setpoint", {"power_kw": 0})
+    labels = {"power_kw": ["trusted_user"]}
 
-    def run(labels: list[str], consequential: bool = False) -> str:
+    def run(labels_seen: list[str], consequential: bool = False) -> str:
         s = Session()
-        s.observe(labels)
+        s.observe(labels_seen)
         s.consequential = consequential
-        return str(check_tool_call(call, {}, POLICY, s).action)
+        return str(check_tool_call(call, labels, POLICY, s).action)
 
     assert run(clean["labels"]) == "allow"
     assert run(["untrusted:email"]) == "allow"  # untrusted + state change, no sensitive data
@@ -263,8 +273,9 @@ def test_rule_of_two_needs_all_three_legs() -> None:
 
 
 def test_rule_of_two_is_skipped_without_a_session_or_when_off() -> None:
-    call = ToolCall("reboot_inverter")
-    assert check_tool_call(call, {}, POLICY).action == "allow"
+    call = ToolCall("set_battery_setpoint", {"power_kw": 0})
+    labels = {"power_kw": ["trusted_user"]}
+    assert check_tool_call(call, labels, POLICY).action == "allow"
     off = load_tool_policy(
         (EXAMPLES / "energy.yaml")
         .read_text(encoding="utf-8")
@@ -272,7 +283,7 @@ def test_rule_of_two_is_skipped_without_a_session_or_when_off() -> None:
     )
     s = Session()
     s.observe(["untrusted:email", "sensitive:meter"])
-    assert check_tool_call(call, {}, off, s).action == "allow"
+    assert check_tool_call(call, labels, off, s).action == "allow"
 
 
 def test_rule_of_two_refuse_mode_and_severity_merge() -> None:
@@ -284,7 +295,9 @@ def test_rule_of_two_refuse_mode_and_severity_merge() -> None:
     policy = load_tool_policy(text)
     s = Session()
     s.observe(["untrusted:email", "sensitive:meter"])
-    d = check_tool_call(ToolCall("reboot_inverter"), {}, policy, s)
+    d = check_tool_call(
+        ToolCall("set_battery_setpoint", {"power_kw": 0}), {"power_kw": ["trusted_user"]}, policy, s
+    )
     assert d.action == "refuse"
     assert d.rule_ids == ["tool-rule-of-two"]
     # argument violation (refuse) and Rule of Two (escalate): the stricter wins, both reported
@@ -293,6 +306,92 @@ def test_rule_of_two_refuse_mode_and_severity_merge() -> None:
     )
     assert d2.action == "refuse"
     assert set(d2.rule_ids) == {"tool-arg-untrusted", "tool-rule-of-two"}
+
+
+# --- untrusted_session -----------------------------------------------------------------------
+
+
+def _with_untrusted_session(mode: str, **replace: str) -> Any:
+    text = (EXAMPLES / "energy.yaml").read_text(encoding="utf-8")
+    text = text.replace("untrusted_session: escalate ", f"untrusted_session: {mode} ")
+    for old, new in replace.items():
+        text = text.replace(old, new)
+    return load_tool_policy(text)
+
+
+def test_untrusted_session_needs_untrusted_data_but_not_sensitive_data() -> None:
+    call = ToolCall("reboot_inverter")
+
+    def run(labels_seen: list[str], consequential: bool = False) -> Any:
+        s = Session()
+        s.observe(labels_seen)
+        s.consequential = consequential
+        return check_tool_call(call, {}, POLICY, s)
+
+    assert run([]).action == "allow"
+    assert run(["sensitive:meter"]).action == "allow"
+    assert run(["system", "trusted_user"], consequential=True).action == "allow"
+    d = run(["untrusted:web"])  # no sensitive data: the Rule of Two is silent
+    assert d.action == "escalate"
+    assert d.rule_ids == ["tool-untrusted-session"]
+    assert d.metadata["rule_of_two"] == {
+        "untrusted_input": True,
+        "sensitive_data": False,
+        "consequential_action": True,
+    }
+    # both rules fire: the Rule of Two's rule id is added, the action is unchanged
+    d = run(["untrusted:email", "sensitive:meter"])
+    assert d.action == "escalate"
+    assert d.rule_ids == ["tool-untrusted-session", "tool-rule-of-two"]
+
+
+def test_untrusted_session_is_not_checked_without_a_session_and_is_off_by_default() -> None:
+    assert check_tool_call(ToolCall("reboot_inverter"), {}, POLICY).action == "allow"
+    allow = _with_untrusted_session("allow")
+    s = Session()
+    s.observe(["untrusted:email"])
+    assert check_tool_call(ToolCall("reboot_inverter"), {}, allow, s).action == "allow"
+    # a tool that does not declare it is unaffected by the same session
+    d = check_tool_call(
+        ToolCall("set_battery_setpoint", {"power_kw": 0}), {"power_kw": ["trusted_user"]}, POLICY, s
+    )
+    assert d.action == "allow"
+
+
+def test_untrusted_session_counts_the_call_arguments_as_well_as_the_session() -> None:
+    policy = load_tool_policy(
+        "tools: {t: {capability: external-send, untrusted_session: refuse,"
+        " args: {a: {type: string, untrusted: allow}}}}"
+    )
+    clean = check_tool_call(ToolCall("t", {"a": "x"}), {"a": ["trusted_user"]}, policy, Session())
+    assert clean.action == "allow"
+    d = check_tool_call(ToolCall("t", {"a": "x"}), {"a": ["untrusted:web"]}, policy, Session())
+    assert d.action == "refuse"
+    assert d.rule_ids == ["tool-untrusted-session"]
+
+
+def test_untrusted_session_refuse_mode_and_severity_merge() -> None:
+    s = Session()
+    s.observe(["untrusted:email"])
+    refuse = _with_untrusted_session("refuse")
+    assert check_tool_call(ToolCall("reboot_inverter"), {}, refuse, s).action == "refuse"
+    # escalate here, refuse for the Rule of Two: the stricter action wins
+    both = _with_untrusted_session("escalate", **{"rule_of_two: escalate": "rule_of_two: refuse"})
+    s.observe(["sensitive:meter"])
+    d = check_tool_call(ToolCall("reboot_inverter"), {}, both, s)
+    assert d.action == "refuse"
+    assert set(d.rule_ids) == {"tool-untrusted-session", "tool-rule-of-two"}
+
+
+def test_untrusted_session_admit_does_not_record_an_escalated_reboot() -> None:
+    reboot = ToolCall("reboot_inverter")
+    owner = Session()  # the owner asks for the reboot and the session read nothing untrusted
+    assert owner.admit(reboot, {}, POLICY).action == "allow"
+    assert owner.consequential is True
+    s = Session()
+    assert s.admit(ToolCall("read_inbox"), {}, POLICY).action == "allow"
+    assert s.admit(reboot, {}, POLICY).action == "escalate"
+    assert s.consequential is False  # it did not run
 
 
 def test_session_admit_records_only_executed_calls_and_completes_the_trifecta_in_order() -> None:
@@ -353,7 +452,17 @@ def test_tool_check_cli_exit_codes(capsys: pytest.CaptureFixture[str]) -> None:
     out = json.loads(capsys.readouterr().out)
     assert rc == 1
     assert out["action"] == "escalate"
-    assert out["rule_ids"] == ["tool-rule-of-two"]
+    assert out["rule_ids"] == ["tool-untrusted-session", "tool-rule-of-two"]
+    # untrusted data only, no sensitive data: only the per-tool rule fires
+    rc = main(
+        ["tool-check", str(EXAMPLES / "call_reboot_untrusted.json"), "--policy", policy, "--json"]
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 1 and out["action"] == "escalate"
+    assert out["rule_ids"] == ["tool-untrusted-session"]
+    noegress = str(EXAMPLES / "energy-noegress.yaml")
+    call = str(EXAMPLES / "call_reboot_untrusted.json")
+    assert main(["tool-check", call, "--policy", noegress]) == 0  # the earlier default
 
 
 def test_tool_check_cli_bad_input_exits_2(tmp_path: Path) -> None:

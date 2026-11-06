@@ -1,0 +1,6 @@
+{
+  "tool": "reboot_inverter",
+  "args": {},
+  "labels": {},
+  "session": {"labels": ["untrusted:web"], "consequential": false}
+}

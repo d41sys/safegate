@@ -4,6 +4,9 @@
 # reproducing the rows published before that decision. Post-scoring refinement (2026-10-30): text
 # sent to the owner's own domain (`internal_domains`) is not scanned, because egress to the
 # trusted principal is not exfiltration; text to any external recipient still is.
+# 2026-11-06: `untrusted_session: escalate` on `reboot_inverter` (no argument to check): not run in
+# a session that has read untrusted data, sensitive or not. `schedule_charge` does not set it: its
+# owner-declared `untrusted: allow` is the use the tool exists for.
 # Tool policy for a synthetic home-battery agent. Generic and invented; no real site, vendor
 # or contract data. Capability classes: read | write | external-send | state-change.
 version: 1
@@ -62,6 +65,7 @@ tools:
   reboot_inverter:
     capability: state-change
     description: Restart the inverter. Takes no arguments.
+    untrusted_session: escalate   # allow | escalate | refuse; needs a session; no arg to check here
   pay_invoice:
     capability: state-change
     description: Pay an invoice.

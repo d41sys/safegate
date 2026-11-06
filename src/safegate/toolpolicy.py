@@ -14,6 +14,11 @@ rule: a session must not combine untrusted input, sensitive data and a consequen
 (``state-change`` or ``external-send``). The call that would complete the combination is
 refused or escalated to a human.
 
+A tool may also declare ``untrusted_session: escalate`` (or ``refuse``): a ``state-change`` or
+``external-send`` tool whose arguments hold nothing worth checking (``reboot_inverter`` takes
+none) is then escalated (or refused) whenever the session has ingested untrusted data, sensitive
+or not.
+
 ``check_tool_call`` returns the same ``Decision`` as the text gate and ``check_spec``.
 
 Limits, by design:
@@ -29,6 +34,8 @@ Limits, by design:
   (``untrusted: allow``), the gate checks bounds, not truth, as ``spec.py`` does.
 * The Rule of Two is session-wide and coarse. It cannot tell that a state change was
   triggered by an injection when the arguments are clean (no arguments, or constants).
+  ``untrusted_session`` closes that for the tools that declare it, at the price of escalating
+  every use of the tool in a session that read untrusted data, whatever triggered it.
 * Labels come from the harness (``safegate.flow``). A wrong label cannot be detected.
 """
 
@@ -65,6 +72,7 @@ _VIOLATION_ACTIONS = ("warn", "refuse", "escalate")
 _RULE_OF_TWO_MODES = ("off", "refuse", "escalate")
 _ARG_TYPES = ("number", "string", "boolean")
 _UNTRUSTED_MODES = ("forbid", "allow")
+_UNTRUSTED_SESSION_MODES = ("allow", "escalate", "refuse")
 
 _ROOT_KEYS = {"version", "on_violation", "rule_of_two", "egress", "tools"}
 _EGRESS_KEYS = {
@@ -74,7 +82,7 @@ _EGRESS_KEYS = {
     "include_tool_hosts",
     "on_violation",
 }
-_TOOL_KEYS = {"capability", "description", "result_labels", "args"}
+_TOOL_KEYS = {"capability", "description", "result_labels", "args", "untrusted_session"}
 _ARG_KEYS = {
     "type",
     "required",
@@ -138,13 +146,18 @@ class ArgPolicy:
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """One declared tool: its capability class, the labels its result carries, its arguments."""
+    """One declared tool: its capability class, the labels its result carries, its arguments.
+
+    ``untrusted_session`` (``allow`` by default) is the action when the tool is called in a
+    session that already holds untrusted data; only a consequential tool may set it.
+    """
 
     name: str
     capability: str
     args: dict[str, ArgPolicy]
     result_labels: Labels = frozenset()
     description: str = ""
+    untrusted_session: str = "allow"
 
     @property
     def consequential(self) -> bool:
@@ -406,7 +419,16 @@ def _parse_tool(name: str, raw: Any) -> ToolSpec:
     raw_args = body.get("args", {})
     args_map = _mapping(raw_args, f"{where}.args")
     args = {str(a): _parse_arg(name, str(a), p) for a, p in args_map.items()}
-    return ToolSpec(name, capability, args, result_labels, description)
+    untrusted_session = body.get("untrusted_session", "allow")
+    if untrusted_session not in _UNTRUSTED_SESSION_MODES:
+        raise ToolPolicyError(
+            f"{where}.untrusted_session must be one of {_UNTRUSTED_SESSION_MODES}"
+        )
+    if untrusted_session != "allow" and capability not in CONSEQUENTIAL:
+        raise ToolPolicyError(
+            f"{where}.untrusted_session needs a state-change or external-send tool"
+        )
+    return ToolSpec(name, capability, args, result_labels, description, untrusted_session)
 
 
 def load_tool_policy(source: Path | str) -> ToolPolicy:
@@ -768,8 +790,14 @@ def check_tool_call(
     or this call would take a consequential action. The session is not modified; use
     ``Session.admit`` to check and record.
 
+    A tool with ``untrusted_session: escalate | refuse`` is also escalated or refused (rule id
+    ``tool-untrusted-session``) when the session labels and this call's argument labels hold
+    untrusted data, whether or not the session holds sensitive data. Without ``session`` it is
+    not checked.
+
     ``allow`` when everything holds, otherwise the most severe of ``policy.on_violation`` (per
-    argument problems) and ``policy.rule_of_two``. An unknown tool is always refused.
+    argument problems), ``policy.rule_of_two`` and the tool's ``untrusted_session``. An unknown
+    tool is always refused.
 
     With an ``egress`` block, arguments marked ``scan_hosts`` must not name a host outside
     ``egress_allowed_hosts(policy, trusted_text)`` (rule id ``tool-arg-egress``).
@@ -814,6 +842,16 @@ def check_tool_call(
         actions.append(policy.on_violation)
 
     call_labels = _call_labels(call, labels)
+    if (
+        session is not None
+        and spec.untrusted_session != "allow"
+        and is_untrusted(union(session.labels, call_labels))
+    ):
+        out.add(
+            "tool-untrusted-session",
+            f"{call.tool} is not run in a session that has read untrusted data",
+        )
+        actions.append(spec.untrusted_session)
     two: dict[str, bool] | None = None
     if session is not None and policy.rule_of_two != "off":
         seen = union(session.labels, call_labels, spec.result_labels)
