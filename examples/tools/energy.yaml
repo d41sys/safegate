@@ -7,6 +7,9 @@
 # 2026-11-06: `untrusted_session: escalate` on `reboot_inverter` (no argument to check): not run in
 # a session that has read untrusted data, sensitive or not. `schedule_charge` does not set it: its
 # owner-declared `untrusted: allow` is the use the tool exists for.
+# 2026-11-06 (second): `untrusted_sources: [web]` on `schedule_charge.start_hour`: the hour may come
+# from the tariff page (`untrusted:web`, `B07`) but not from an e-mail or a calendar invite. A
+# poisoned tariff page is still accepted: it is the allowed source.
 # Tool policy for a synthetic home-battery agent. Generic and invented; no real site, vendor
 # or contract data. Capability classes: read | write | external-send | state-change.
 version: 1
@@ -61,7 +64,7 @@ tools:
     capability: state-change
     description: Start hour of the daily charge. Users route tariff pages into this on purpose.
     args:
-      start_hour: {type: number, min: 0, max: 23, untrusted: allow}
+      start_hour: {type: number, min: 0, max: 23, untrusted: allow, untrusted_sources: [web]}
   reboot_inverter:
     capability: state-change
     description: Restart the inverter. Takes no arguments.

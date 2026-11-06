@@ -90,6 +90,10 @@ def test_example_policy_loads() -> None:
     )
 
 
+def _arg_policy(arg: str) -> str:
+    return "tools: {t: {capability: state-change, args: {a: {type: number, " + arg + "}}}}"
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -110,6 +114,11 @@ def test_example_policy_loads() -> None:
         "tools: {t: {capability: read, untrusted_session: escalate}}",
         "tools: {t: {capability: write, untrusted_session: refuse}}",
         "tools: {t: {capability: state-change, untrusted_session: maybe}}",
+        _arg_policy("untrusted_sources: [web]"),
+        _arg_policy("untrusted: forbid, untrusted_sources: [web]"),
+        _arg_policy("untrusted: allow, untrusted_sources: []"),
+        _arg_policy("untrusted: allow, untrusted_sources: [a b]"),
+        _arg_policy("untrusted: allow, untrusted_sources: [unlabeled]"),
         "- a list",
     ],
 )
@@ -150,6 +159,36 @@ def test_allowed_untrusted_argument_still_checks_bounds() -> None:
     bad = _check("schedule_charge", {"start_hour": 31}, {"start_hour": ["untrusted:web"]})
     assert ok.action == "allow"
     assert bad.rule_ids == ["tool-arg-range"]
+
+
+_HOUR = {"start_hour": 2}
+
+
+def test_untrusted_sources_allow_the_named_source_only() -> None:
+    assert POLICY.tools["schedule_charge"].args["start_hour"].untrusted_sources == ("web",)
+    web = _check("schedule_charge", _HOUR, {"start_hour": ["untrusted:web"]})
+    assert web.action == "allow"
+    for source in ("email", "calendar", "unlabeled"):
+        d = _check("schedule_charge", _HOUR, {"start_hour": [f"untrusted:{source}"]})
+        assert d.action == "refuse"
+        assert d.rule_ids == ["tool-arg-untrusted"]
+    # a missing label is untrusted:unlabeled, never vouched for
+    assert _check("schedule_charge", _HOUR, {}).action == "refuse"
+    # a mix is refused as soon as one untrusted source is not named
+    mixed = _check("schedule_charge", _HOUR, {"start_hour": ["untrusted:web", "untrusted:email"]})
+    assert mixed.rule_ids == ["tool-arg-untrusted"]
+    # trusted and system values are untouched; bounds still apply to the allowed source
+    assert _check("schedule_charge", _HOUR, {"start_hour": ["trusted_user"]}).action == "allow"
+    both = _check("schedule_charge", _HOUR, {"start_hour": ["trusted_user", "untrusted:web"]})
+    assert both.action == "allow"
+    far = _check("schedule_charge", {"start_hour": 31}, {"start_hour": ["untrusted:web"]})
+    assert far.rule_ids == ["tool-arg-range"]
+
+
+def test_untrusted_allow_without_sources_still_means_every_source() -> None:
+    for source in ("email", "calendar", "web"):
+        d = _check("add_note", {"text": "ok"}, {"text": [f"untrusted:{source}"]})
+        assert d.action == "allow"
 
 
 def test_range_value_type_and_shape_checks() -> None:
@@ -463,6 +502,10 @@ def test_tool_check_cli_exit_codes(capsys: pytest.CaptureFixture[str]) -> None:
     noegress = str(EXAMPLES / "energy-noegress.yaml")
     call = str(EXAMPLES / "call_reboot_untrusted.json")
     assert main(["tool-check", call, "--policy", noegress]) == 0  # the earlier default
+    # the charge hour: from the tariff page it passes, from an e-mail it is refused
+    assert main(["tool-check", str(EXAMPLES / "call_hour_web.json"), "--policy", policy]) == 0
+    assert main(["tool-check", str(EXAMPLES / "call_hour_email.json"), "--policy", policy]) == 1
+    assert main(["tool-check", str(EXAMPLES / "call_hour_email.json"), "--policy", noegress]) == 0
 
 
 def test_tool_check_cli_bad_input_exits_2(tmp_path: Path) -> None:

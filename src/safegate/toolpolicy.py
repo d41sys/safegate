@@ -5,7 +5,9 @@ checks the *action* the agent is about to take. Tools are declared in YAML with 
 class and a policy per argument; every argument value arrives with provenance labels
 (``safegate.flow``). A call is allowed only when each argument satisfies its policy:
 
-* ``untrusted: forbid`` (the default): the value must not derive from untrusted text,
+* ``untrusted: forbid`` (the default): the value must not derive from untrusted text; with
+  ``untrusted: allow`` it may, from any source, or only from the sources named in
+  ``untrusted_sources`` (``untrusted_sources: [web]`` admits ``untrusted:web`` and nothing else).
 * numeric ``min`` / ``max``, an ``allowed_values`` list, ``allowed_hosts`` for URLs,
   ``allowed_email_domains`` for recipients.
 
@@ -31,7 +33,9 @@ Limits, by design:
   domain (``egress.internal_domains``, via the recipient argument) is not scanned: egress to the
   trusted principal is not exfiltration.
 * When the user legitimately routes untrusted data into an argument the policy allows
-  (``untrusted: allow``), the gate checks bounds, not truth, as ``spec.py`` does.
+  (``untrusted: allow``), the gate checks bounds, not truth, as ``spec.py`` does. With
+  ``untrusted_sources`` it checks the source label as well, which cannot tell a poisoned page
+  from a good one when both come from an allowed source (``J12`` planted in the tariff page).
 * The Rule of Two is session-wide and coarse. It cannot tell that a state change was
   triggered by an injection when the arguments are clean (no arguments, or constants).
   ``untrusted_session`` closes that for the tools that declare it, at the price of escalating
@@ -53,12 +57,15 @@ import yaml
 
 from safegate.flow import (
     UNLABELED,
+    UNTRUSTED_PREFIX,
     Labeled,
     Labels,
     is_sensitive,
     is_untrusted,
     parse_labels,
     union,
+    untrusted_labels,
+    validate_label,
 )
 from safegate.gate import Decision
 from safegate.rules import ACTION_PRECEDENCE
@@ -87,6 +94,7 @@ _ARG_KEYS = {
     "type",
     "required",
     "untrusted",
+    "untrusted_sources",
     "min",
     "max",
     "allowed_values",
@@ -135,6 +143,7 @@ class ArgPolicy:
     type: str
     required: bool = True
     allow_untrusted: bool = False
+    untrusted_sources: tuple[str, ...] | None = None
     minimum: float | None = None
     maximum: float | None = None
     allowed_values: tuple[str | float, ...] | None = None
@@ -289,6 +298,18 @@ def _parse_arg(tool: str, name: str, raw: Any) -> ArgPolicy:
     mode = body.get("untrusted", "forbid")
     if mode not in _UNTRUSTED_MODES:
         raise ToolPolicyError(f"{where}.untrusted must be one of {_UNTRUSTED_MODES}")
+    sources: tuple[str, ...] | None = None
+    if "untrusted_sources" in body:
+        if mode != "allow":
+            raise ToolPolicyError(f"{where}.untrusted_sources needs untrusted: allow")
+        sources = _string_list(body["untrusted_sources"], f"{where}.untrusted_sources")
+        for source in sources:
+            if UNTRUSTED_PREFIX + source == UNLABELED:
+                raise ToolPolicyError(f"{where}.untrusted_sources: {source!r} is never vouched for")
+            try:
+                validate_label(UNTRUSTED_PREFIX + source)
+            except ValueError as exc:
+                raise ToolPolicyError(f"{where}.untrusted_sources: {exc}") from exc
 
     minimum = _number(body["min"], f"{where}.min") if "min" in body else None
     maximum = _number(body["max"], f"{where}.max") if "max" in body else None
@@ -349,6 +370,7 @@ def _parse_arg(tool: str, name: str, raw: Any) -> ArgPolicy:
         type=arg_type,
         required=required,
         allow_untrusted=mode == "allow",
+        untrusted_sources=sources,
         minimum=minimum,
         maximum=maximum,
         allowed_values=allowed_values,
@@ -747,9 +769,19 @@ def _check_arg(
     out: _Violations,
     egress_hosts: tuple[str, ...] | None = None,
 ) -> None:
-    if not policy.allow_untrusted and is_untrusted(labels):
-        bad = sorted(label for label in labels if label.startswith("untrusted:"))
+    bad = sorted(untrusted_labels(labels))
+    if bad and not policy.allow_untrusted:
         out.add("tool-arg-untrusted", f"{name}: derives from untrusted input ({bad})", name)
+    elif bad and policy.untrusted_sources is not None:
+        allowed = {UNTRUSTED_PREFIX + s for s in policy.untrusted_sources}
+        other = [label for label in bad if label not in allowed]
+        if other:
+            out.add(
+                "tool-arg-untrusted",
+                f"{name}: derives from untrusted input ({other}) outside the allowed "
+                f"sources ({sorted(allowed)})",
+                name,
+            )
     if not _type_ok(value, policy.type):
         out.add(
             "tool-arg-type", f"{name}: expected {policy.type}, got {type(value).__name__}", name

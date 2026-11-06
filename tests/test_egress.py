@@ -44,11 +44,16 @@ NOEGRESS_PATH = POLICY_PATH.with_name("energy-noegress.yaml")
 BASE = load_tool_policy(NOEGRESS_PATH)
 EGRESS = load_tool_policy(EGRESS_PATH)
 # the same tools as the default, without the egress rule: isolates what the egress block changes
+_CHARGE = BASE.tools["schedule_charge"]
 BASE_SESSION = replace(
     BASE,
     tools={
         **BASE.tools,
         "reboot_inverter": replace(BASE.tools["reboot_inverter"], untrusted_session="escalate"),
+        "schedule_charge": replace(
+            _CHARGE,
+            args={"start_hour": replace(_CHARGE.args["start_hour"], untrusted_sources=("web",))},
+        ),
     },
 )
 assert EGRESS.egress is not None
@@ -409,13 +414,15 @@ def test_other_injections_are_unchanged_except_the_text_ones() -> None:
 
 
 def test_the_default_policy_is_the_noegress_policy_plus_the_rule() -> None:
-    """The two files differ in the egress rule and in ``untrusted_session`` on the reboot."""
+    """The two files differ in the egress rule, in ``untrusted_session`` on the reboot and in
+    ``untrusted_sources`` on the charge hour."""
     assert BASE.egress is None and EGRESS.egress is not None
     assert BASE.tools.keys() == EGRESS.tools.keys()
     for name, spec in BASE.tools.items():
         other = EGRESS.tools[name]
         stripped = {
-            a: replace(p, scan_hosts=False, recipient_of=None) for a, p in other.args.items()
+            a: replace(p, scan_hosts=False, recipient_of=None, untrusted_sources=None)
+            for a, p in other.args.items()
         }
         assert stripped == spec.args, name
         assert (other.capability, other.result_labels) == (spec.capability, spec.result_labels)
@@ -425,7 +432,10 @@ def test_the_default_policy_is_the_noegress_policy_plus_the_rule() -> None:
     assert BASE_SESSION.tools == {
         **BASE.tools,
         "reboot_inverter": replace(BASE.tools["reboot_inverter"], untrusted_session="escalate"),
+        "schedule_charge": BASE_SESSION.tools["schedule_charge"],
     }
+    assert BASE_SESSION.tools["schedule_charge"].args["start_hour"].untrusted_sources == ("web",)
+    assert EGRESS.tools["schedule_charge"] == BASE_SESSION.tools["schedule_charge"]
 
 
 # --------------------------------------------------------------------------------------

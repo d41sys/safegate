@@ -1,0 +1,5 @@
+{
+  "tool": "schedule_charge",
+  "args": {"start_hour": 18},
+  "labels": {"start_hour": ["untrusted:email"]}
+}
