@@ -47,7 +47,7 @@ flowchart LR
 | `stage2.py` | Stage 2 v2: sparse hashed char/word features, class-balanced fit, out-of-fold validation folds, `select_thresholds` (refuse / review cut-offs), `Stage2Model` save/load/explain |
 | `stage2_eval.py` | Protocol and reports behind `safegate stage2-report`: legacy diagnosis, dev grid, scenarios (a) to (d) |
 | `lodo.py` | Leave-one-dataset-out split logic (`lodo_split`, `shipped_split`: cap, decontaminate, de-duplicate), the pre-declared decision rule (`decide`) and the reports behind `safegate lodo-report` |
-| `classifier.py` | `ContentClassifier` Protocol; `KeywordClassifier` (default), `OpenAIModerationClassifier` (extra `[openai]`, no-op without `OPENAI_API_KEY`), `CompositeClassifier` (max-score per category) |
+| `classifier.py` | `ContentClassifier` Protocol; `KeywordClassifier` (default), `OpenAIModerationClassifier` (extra `[openai]`, no-op without `OPENAI_API_KEY`; an API error escalates via `escalate-classifier-error`), `CompositeClassifier` (max-score per category) |
 | `rules.py` + `rule_configs/default.yaml` | Strict-schema rules engine; unknown keys raise `RuleConfigError` |
 | `gate.py` | `SafetyGate.check_input`, `stream_output`, `wrap(llm_fn)`, `run(prompt, llm_fn) -> (text, RequestTrace)`, JSONL audit trail |
 | `spec.py` | `check_spec(spec, policy, previous) -> Decision` and `load_spec_policy`: deterministic contract-bounds gate on an LLM-emitted constraint spec; used by `safegate spec-check` |
@@ -119,7 +119,7 @@ print("".join(safe_llm("tell me about heat pumps")))
 Install into another project (for example the ezcross-ems backend) from a GitHub Release, no clone needed:
 
 ```bash
-uv add https://github.com/d41sys/safegate/releases/download/v0.1.0/safegate-0.1.0-py3-none-any.whl
+uv add https://github.com/d41sys/safegate/releases/download/v0.1.1/safegate-0.1.1-py3-none-any.whl
 ```
 
 CI (`.github/workflows/ci.yml`) runs ruff, format check, mypy and pytest on every push and pull request. Releases (`release.yml`): bump `version` in `pyproject.toml`, push a tag `v<version>`; the workflow re-runs the tests, checks the tag matches the version, builds the wheel and sdist and attaches them to a GitHub Release.
@@ -1906,4 +1906,5 @@ Calls and cost: 1,076 API calls of the 2,000 cap (787 for the 12 screening confi
 - **Streaming buffer.** The last 64 characters are held back and checked again, with the output rules and the content classifier, after each new chunk. A trigger split across chunks is therefore caught before any part of it is emitted. `refuse` and `escalate` both withhold the rest of the stream. Redaction is applied inside the buffer before text is released. The classifier runs once per chunk, so a remote classifier (OpenAI moderation) costs one call per chunk.
 - **Refusals name no rule.** A blocked request gets a fixed message ("I cannot fulfill this request due to safety policies." or the escalation notice). Rule ids and detector reasons stay in the `Decision`, the trace and the audit log; showing them would tell an attacker which pattern to change.
 - **Audit log without text.** Each audit record stores `text_sha256` and `text_chars`, never the prompt or output itself. The hash is unsalted: it lets you match a record to a text you already hold, and anyone with the log can confirm a guess for a short or templated text (a PIN, a meter id), so treat the log as sensitive. The in-memory copy (`audit_records`) keeps the last 1,000 records; the JSONL file keeps all of them.
-- **Optional dependencies.** The OpenAI moderation classifier is behind the `[openai]` extra and returns "not flagged" when no key is set, so tests and CI stay offline.
+- **Optional dependencies.** The OpenAI moderation classifier is behind the `[openai]` extra and returns "not flagged" when no key is set, so tests and CI stay offline. Once a key is set it fails closed: an API error becomes the category `classifier_error`, which the default rule `escalate-classifier-error` sends to human review instead of passing the text unchecked.
+- **Input size is the host's job.** `check_input` is linear in length with the default rules: about 0.8 to 1.3 s per million characters on an M-series laptop for plain, base64, hex, Unicode-confusable and whitespace-only inputs (measured 2026-11-12). There is no built-in cap; a host should reject oversized requests before calling the gate.

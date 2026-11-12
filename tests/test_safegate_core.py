@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from safegate.classifier import CompositeClassifier, KeywordClassifier
+from safegate.classifier import CompositeClassifier, KeywordClassifier, OpenAIModerationClassifier
 from safegate.gate import SafetyGate
 from safegate.injection import InjectionDetector
 from safegate.mock_llm import MockStreamingLLM
@@ -363,6 +363,20 @@ def test_keyword_classifier_allows_benign() -> None:
     clf = KeywordClassifier()
     res = clf.classify("how do I kill a python process")
     assert res.flagged is False
+
+
+def test_remote_classifier_error_escalates_instead_of_allowing() -> None:
+    class DownClient:
+        class moderations:
+            @staticmethod
+            def create(input: str) -> None:
+                raise TimeoutError("moderation endpoint timed out")
+
+    clf = OpenAIModerationClassifier()
+    clf._client = DownClient()
+    decision = SafetyGate(classifier=clf).check_input("tell me about heat pumps")
+    assert decision.action == "escalate"
+    assert "escalate-classifier-error" in decision.rule_ids
 
 
 def test_composite_classifier_max_aggregation() -> None:

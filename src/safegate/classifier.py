@@ -116,10 +116,11 @@ class OpenAIModerationClassifier:
                 reasons=reasons,
             )
         except Exception as exc:
+            # Fail closed: the default rule escalate-classifier-error sends this to review.
             return ContentClassificationResult(
-                flagged=False,
-                categories={},
-                reasons=[f"OpenAI Moderation skipped due to error: {exc}"],
+                flagged=True,
+                categories={"classifier_error": 1.0},
+                reasons=[f"OpenAI Moderation failed: {exc}"],
             )
 
 

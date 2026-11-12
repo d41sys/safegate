@@ -152,6 +152,14 @@ rules:
     action: refuse
     priority: 85
 
+  - id: escalate-classifier-error
+    description: "Escalate when a configured remote classifier fails, instead of passing unchecked"
+    applies_to: both
+    match:
+      classifier_category: classifier_error
+    action: escalate
+    priority: 85
+
   - id: warn-professional-advice
     description: "Flag requests for medical, legal or investment advice (answer allowed, flagged)"
     applies_to: input
