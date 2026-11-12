@@ -1376,6 +1376,8 @@ The informational cell above was scored once on the TEST splits that had already
 | `dolly` | benign, long texts | `databricks/databricks-dolly-15k` (`bdd27f4`) | CC BY-SA 3.0 | 600 (sha1 order) |
 | `notinject` | over-defense | `leolee99/NotInject` (`847ae76`), InjecGuard paper, arXiv 2410.22770 | MIT | 339, scored on its own |
 
+The committed replay cache `data/llm_cache/guard.jsonl` holds the `notinject`, `wildguard` and `bipia` texts verbatim inside the saved API requests. Their licences (MIT, ODC-BY, MIT) allow redistribution with attribution; the rows above are that attribution. Every other committed cache holds only texts written for this repo or hashes.
+
 **Configurations.** A = the shipped defence (eight components, no windows); B = A plus windows 150:37:0. **Rule (fixed before scoring):** ship windows as the default iff, on the default gate, padding evasion falls by at least 20 points, pooled fresh benign FPR rises by at most 5 points and NotInject over-defense accuracy falls by at most 5 points. The legacy gate is scored with the same three tests; if only the legacy gate failed, windows would ship for the default gate only.
 
 ```bash

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
 from safegate.classifier import (
     CompositeClassifier,
@@ -72,4 +73,7 @@ __all__ = [
     "user",
 ]
 
-__version__ = version("safegate")
+try:
+    __version__ = _pkg_version("safegate")
+except PackageNotFoundError:  # imported from a source tree that was never installed
+    __version__ = "0+unknown"
