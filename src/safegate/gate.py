@@ -121,8 +121,8 @@ class SafetyGate:
     def _log_decision(self, target: str, text: str, decision: Decision) -> None:
         """Record an audit trail entry in memory and append to JSONL if configured.
 
-        The text is stored as a hash and a length, never verbatim, so prompts and secrets
-        stay out of the log; the caller's trace keeps the text if it needs it.
+        The text is stored as an unsalted SHA-256 and a length, never verbatim; a short or
+        templated text can still be confirmed by guessing, so the log stays sensitive.
         """
         record = {
             "timestamp": time.time(),
