@@ -13,7 +13,11 @@ from safegate.llm import (
     BudgetExceeded,
     CacheMiss,
     LLMError,
+    _from_openai,
     _Retryable,
+    _to_openai,
+    http_transport,
+    openai_transport,
     parse_agent_spec,
     request_key,
 )
@@ -155,10 +159,64 @@ def test_http_transport_without_a_key_says_so(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_agent_spec() -> None:
-    assert parse_agent_spec("anthropic:claude-sonnet-5-5") == "claude-sonnet-5-5"
-    for bad in ("claude-sonnet-5-5", "openai:gpt", "anthropic:"):
+    assert parse_agent_spec("anthropic:claude-sonnet-5-5") == ("claude-sonnet-5-5", http_transport)
+    assert parse_agent_spec("openai:qwen3:8b") == ("qwen3:8b", openai_transport)
+    for bad in ("claude-sonnet-5-5", "gemini:x", "anthropic:", "openai:"):
         with pytest.raises(ValueError):
             parse_agent_spec(bad)
+
+
+def test_openai_translation_keeps_the_tool_turns_paired() -> None:
+    # One agent turn as the loop builds it: a tool call, then its result.
+    body = _to_openai(
+        {
+            "model": "qwen3:8b",
+            "max_tokens": 64,
+            "system": "sys",
+            "messages": [
+                {"role": "user", "content": "cap it"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "ok"},
+                        {"type": "tool_use", "id": "c1", "name": "cap", "input": {"kw": 2}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "done"}],
+                },
+            ],
+            "tools": [{"name": "cap", "description": "d", "input_schema": {"type": "object"}}],
+        }
+    )
+    assert [m["role"] for m in body["messages"]] == ["system", "user", "assistant", "tool"]
+    call = body["messages"][2]["tool_calls"][0]
+    assert call["id"] == body["messages"][3]["tool_call_id"] == "c1"
+    assert call["function"] == {"name": "cap", "arguments": '{"kw": 2}'}
+    assert body["tools"][0]["function"]["parameters"] == {"type": "object"}
+
+    reply = _from_openai(
+        {
+            "model": "qwen3:8b",
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {"id": "c2", "function": {"name": "cap", "arguments": '{"kw": 3}'}},
+                            {"id": "c3", "function": {"name": "cap", "arguments": "{bad json"}},
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }
+    )
+    assert reply["stop_reason"] == "tool_use"
+    assert [b["input"] for b in reply["content"]] == [{"kw": 3}, {}]  # no empty text block
+    assert reply["usage"] == {"input_tokens": 10, "output_tokens": 4}
 
 
 @pytest.mark.network

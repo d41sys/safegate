@@ -1,10 +1,14 @@
-"""A small Anthropic Messages client: stdlib ``urllib`` only, with a JSONL disk cache.
+"""A small Messages client: stdlib ``urllib`` only, with a JSONL disk cache.
 
 Every call goes through the cache. A cache entry holds the request, the response content, the
 model id the API returned, the usage and a UTC timestamp; the API key is never part of it (the key
 is read from ``ANTHROPIC_API_KEY`` when a request is actually sent, and is removed from every error
 message). Scoring reads the cache, so re-scoring is free and reproducible: with ``offline=True`` a
 miss raises ``CacheMiss`` instead of calling the network.
+
+Requests and cached responses use the Anthropic Messages shape. ``openai_transport`` translates
+them to and from an OpenAI-compatible ``/chat/completions`` endpoint (Ollama, vLLM), so a local
+model runs through the same cache, budget and agent loop.
 
 Protocol: ``docs/protocol-llm.md``. The pinned model rejects ``temperature``, so requests carry no
 sampling parameters.
@@ -38,6 +42,9 @@ TAG = "claude-sonnet-5-5 via Anthropic API, no logprobs"
 
 Json = dict[str, Any]
 Transport = Callable[[Json], Json]
+# An OpenAI-compatible server, e.g. http://localhost:11435/v1 (an SSH tunnel to Ollama).
+OPENAI_BASE_URL_ENV = "SAFEGATE_OPENAI_BASE_URL"
+_STOP_REASONS = {"tool_calls": "tool_use", "stop": "end_turn", "length": "max_tokens"}
 
 
 class LLMError(RuntimeError):
@@ -137,6 +144,104 @@ def http_transport(payload: Json, *, timeout: float = 180.0) -> Json:
         raise LLMError(f"HTTP {err.code}: {body}") from None
     except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
         raise _Retryable(0, None, _redact(str(err), key)) from None
+
+
+def _to_openai(payload: Mapping[str, Any]) -> Json:
+    """An Anthropic Messages request body as an OpenAI ``/chat/completions`` body."""
+    messages: list[Json] = [{"role": "system", "content": payload["system"]}]
+    for m in payload["messages"]:
+        content = m["content"]
+        if isinstance(content, str):
+            messages.append({"role": m["role"], "content": content})
+        elif m["role"] == "assistant":
+            calls = [
+                {
+                    "id": b["id"],
+                    "type": "function",
+                    "function": {"name": b["name"], "arguments": json.dumps(b["input"])},
+                }
+                for b in content
+                if b["type"] == "tool_use"
+            ]
+            text = "".join(b["text"] for b in content if b["type"] == "text")
+            messages.append(
+                {"role": "assistant", "content": text, **({"tool_calls": calls} if calls else {})}
+            )
+        else:  # a user turn of tool results
+            for b in content:
+                messages.append(
+                    {"role": "tool", "tool_call_id": b["tool_use_id"], "content": b["content"]}
+                )
+    body: Json = {
+        "model": payload["model"],
+        "max_tokens": payload["max_tokens"],
+        "messages": messages,
+    }
+    if "tools" in payload:
+        body["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                },
+            }
+            for t in payload["tools"]
+        ]
+    return body
+
+
+def _from_openai(data: Mapping[str, Any]) -> Json:
+    """An OpenAI ``/chat/completions`` response in the Anthropic Messages shape."""
+    choice = data["choices"][0]
+    msg = choice["message"]
+    content: list[Json] = [{"type": "text", "text": msg["content"]}] if msg.get("content") else []
+    for call in msg.get("tool_calls") or []:
+        try:
+            args = json.loads(call["function"]["arguments"] or "{}")
+        except json.JSONDecodeError:
+            args = {}  # the agent loop reports the missing arguments back to the model
+        content.append(
+            {
+                "type": "tool_use",
+                "id": call["id"],
+                "name": call["function"]["name"],
+                "input": args if isinstance(args, dict) else {},
+            }
+        )
+    usage = data.get("usage") or {}
+    return {
+        "content": content,
+        "stop_reason": _STOP_REASONS.get(choice.get("finish_reason") or "", "end_turn"),
+        "model": data["model"],
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        },
+    }
+
+
+def openai_transport(payload: Json, *, timeout: float = 600.0) -> Json:
+    """POST to ``$SAFEGATE_OPENAI_BASE_URL/chat/completions``; no key (a local server)."""
+    base = os.environ.get(OPENAI_BASE_URL_ENV)
+    if not base:
+        raise LLMError(f"{OPENAI_BASE_URL_ENV} is not set (e.g. http://localhost:11435/v1)")
+    req = urllib.request.Request(
+        base.rstrip("/") + "/chat/completions",
+        data=json.dumps(_to_openai(payload)).encode("utf-8"),
+        headers={"content-type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return _from_openai(json.loads(resp.read()))
+    except urllib.error.HTTPError as err:
+        body = err.read().decode("utf-8", "replace")[:400]
+        if err.code in RETRY_STATUS:
+            raise _Retryable(err.code, None, body) from None
+        raise LLMError(f"HTTP {err.code}: {body}") from None
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
+        raise _Retryable(0, None, str(err)) from None
 
 
 @dataclass
@@ -248,7 +353,8 @@ class AnthropicClient:
 
     def tag(self) -> str:
         """The provenance tag every reported number carries."""
-        return f"{self.model} via Anthropic API, {self.run_date()}, no logprobs"
+        via = "OpenAI-compatible API" if self.transport is openai_transport else "Anthropic API"
+        return f"{self.model} via {via}, {self.run_date()}, no logprobs"
 
     def served_models(self) -> set[str]:
         """The model ids the API returned for the entries of this cache."""
@@ -294,12 +400,16 @@ def _count_cached(directory: Path) -> int:
     return total
 
 
-def parse_agent_spec(spec: str) -> str:
-    """``anthropic:<model>`` to the model id; anything else is an error."""
+def parse_agent_spec(spec: str) -> tuple[str, Transport]:
+    """``anthropic:<model>`` or ``openai:<model>`` (``$SAFEGATE_OPENAI_BASE_URL``) to the
+    model id and the transport; anything else is an error."""
     provider, _, model = spec.partition(":")
-    if provider != "anthropic" or not model:
-        raise ValueError(f"unknown agent {spec!r}: expected 'anthropic:<model>'")
-    return model
+    transports: dict[str, Transport] = {"anthropic": http_transport, "openai": openai_transport}
+    if provider not in transports or not model:
+        raise ValueError(
+            f"unknown agent {spec!r}: expected 'anthropic:<model>' or 'openai:<model>'"
+        )
+    return model, transports[provider]
 
 
 def totals(clients: Sequence[AnthropicClient]) -> tuple[int, int, int]:

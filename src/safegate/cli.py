@@ -69,6 +69,8 @@ from safegate.llm import (
     MODEL,
     AnthropicClient,
     LLMError,
+    Transport,
+    openai_transport,
     parse_agent_spec,
     totals,
 )
@@ -762,8 +764,8 @@ def _benchmark_guard(args: argparse.Namespace) -> int:
         print("error: --guard needs --suite injecguard", file=sys.stderr)
         return 2
     try:
-        model = parse_agent_spec(args.guard)
-        client = _llm_client(args, model, "guard.jsonl")
+        model, transport = parse_agent_spec(args.guard)
+        client = _llm_client(args, model, transport, "guard.jsonl")
         data = load_guard_data(args.cache_dir)
         run = run_guard(client, data)
     except (OSError, ValueError, LLMError) as exc:
@@ -793,8 +795,8 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
 def cmd_guard_dev(args: argparse.Namespace) -> int:
     """Score the zero-shot LLM guard prompt on the 50-item dev set (bundled training data)."""
     try:
-        model = parse_agent_spec(args.guard)
-        client = _llm_client(args, model, "guard-dev.jsonl")
+        model, transport = parse_agent_spec(args.guard)
+        client = _llm_client(args, model, transport, "guard-dev.jsonl")
         recall, benign, bad = score_dev(client)
     except (OSError, ValueError, LLMError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -938,13 +940,22 @@ def cmd_tool_check(args: argparse.Namespace) -> int:
     return 1 if decision.action in BLOCKING_ACTIONS else 0
 
 
-def _llm_client(args: argparse.Namespace, model: str, default_cache: str) -> AnthropicClient:
-    """The cached client selected by ``--llm-cache`` and ``--llm-offline``."""
+def _llm_client(
+    args: argparse.Namespace, model: str, transport: Transport, default_cache: str
+) -> AnthropicClient:
+    """The cached client selected by ``--llm-cache`` and ``--llm-offline``.
+
+    A local (OpenAI-compatible) model's cache lives under ``local/``: its own files and call ledger.
+    """
+    if transport is openai_transport:
+        default_cache = f"local/{default_cache}"
     path = Path(args.llm_cache or Path(DEFAULT_CACHE_DIR) / default_cache)
     max_calls = getattr(args, "max_calls", None)
     if max_calls is None:
-        return AnthropicClient(path, model=model, offline=args.llm_offline)
-    return AnthropicClient(path, model=model, offline=args.llm_offline, max_calls=max_calls)
+        return AnthropicClient(path, model=model, offline=args.llm_offline, transport=transport)
+    return AnthropicClient(
+        path, model=model, offline=args.llm_offline, max_calls=max_calls, transport=transport
+    )
 
 
 def _usage_line(client: AnthropicClient) -> str:
@@ -957,9 +968,10 @@ def _usage_line(client: AnthropicClient) -> str:
 
 
 def _tool_eval_llm(args: argparse.Namespace, policy: ToolPolicy | None) -> int:
-    """``tool-eval --agent anthropic:<model>``: the model as the agent (``protocol-llm.md``)."""
+    """``tool-eval --agent anthropic:<model>`` or ``openai:<model>``: the model as the agent
+    (``protocol-llm.md``)."""
     try:
-        model = parse_agent_spec(args.agent)
+        model, transport = parse_agent_spec(args.agent)
         stress = args.agent_prompt != "default"
         cache_name = "tool-eval-dev.jsonl" if args.dev else "tool-eval.jsonl"
         if stress and not args.dev:
@@ -970,7 +982,7 @@ def _tool_eval_llm(args: argparse.Namespace, policy: ToolPolicy | None) -> int:
         elif model != MODEL or args.payload_style != "base" or args.screen:
             # experiment 3 (other models, payload styles, screening): one cache file per model
             cache_name = f"weak/{model}-dev.jsonl" if args.dev else f"weak/{model}.jsonl"
-        client = _llm_client(args, model, cache_name)
+        client = _llm_client(args, model, transport, cache_name)
         recorded = load_tool_policy(Path(args.recorded_under)) if args.recorded_under else None
         if args.dev:
             for run in run_dev(client, policy):
@@ -1346,7 +1358,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_teval.add_argument(
         "--agent",
         help="a real model as the agent instead of the scripted oracle, e.g. "
-        "anthropic:claude-sonnet-5-5 (needs ANTHROPIC_API_KEY unless --llm-offline)",
+        "anthropic:claude-sonnet-5-5 (needs ANTHROPIC_API_KEY unless --llm-offline) or "
+        "openai:qwen3:8b (an OpenAI-compatible server at $SAFEGATE_OPENAI_BASE_URL)",
     )
     p_teval.add_argument(
         "--agent-prompt",

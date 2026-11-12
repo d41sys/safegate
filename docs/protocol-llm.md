@@ -901,3 +901,67 @@ changes in the bullets above ("Replay under the default", "Result of the re-scor
 for them. Sonnet 4.5 `compliant` with `operator` still needs `--recorded-under`: one `add_note`
 refusal (`B06` under `J10`, `full`) was never recorded. `J13` and `J14`: 0 attempted. See
 `docs/protocol-toolcheck.md`, last section, and the README, "Egress rule".
+
+## Experiment 5: a local open-weights agent (pre-registered before any scored run)
+
+**Why.** Every real agent so far is a Claude model, and the strongest ones obeyed almost no
+payload by themselves. The host this layer is meant for (an energy-management agent) runs a small
+local model. This experiment puts that model in the agent seat, so the layer is tested where the
+model's own resistance is weakest.
+
+**Disclosure of timing.** Written after the `openai:` transport was added
+(`llm.openai_transport`, translating the cached Anthropic request shape to an OpenAI-compatible
+`/chat/completions` call and back) and after one plumbing run (`--dev`: 3 cases outside the suite,
+3 conditions, 5 calls, cache `data/llm_cache/local/weak/qwen3:8b-dev.jsonl`). Nothing was scored.
+
+### Fixed before scoring
+
+* **Model**: `qwen3:8b` (Ollama 0.18.1, digest `500a1f067a9f`, Q4_K_M, runtime context 40,960
+  tokens, 100% GPU) on a shared server, reached through an SSH tunnel;
+  `SAFEGATE_OPENAI_BASE_URL=http://localhost:11435/v1`, `--agent openai:qwen3:8b`. Thinking is on
+  (the model's default); the reasoning text is returned separately by the server and is **not**
+  cached, so only the content and tool calls are scored. No sampling parameters are sent, so the
+  Modelfile defaults apply (temperature 0.6, top_k 20, top_p 0.95): single samples, a rerun may
+  differ. The model is unloaded (`keep_alive: 0`) after each run.
+* **Unchanged from experiment 3**: scenarios (18 benign, 15 injections), tools, labeller, checkers,
+  metrics, conditions `none`, `args`, `full`, `MAX_TURNS` 12, `MAX_TOKENS` 1024 (which here also
+  bounds the thinking text; a reply cut by it ends with `stop_reason` `max_tokens`), the screening
+  subset `stage1` (10 tasks x 5 injections, condition `none`, 50 runs), the payload styles, and the
+  policy: the current default `examples/tools/energy.yaml` (egress rule on, `internal_domains`).
+* **Translation rules** (`llm._to_openai`, `_from_openai`, tested in `tests/test_llm.py`): a
+  tool call whose arguments are not valid JSON becomes a call with no arguments, which the agent
+  loop answers with "Invalid arguments" (counted as an `error` call, not as an attack).
+
+### Schedule and budget (hard cap 2,500 calls, counted over `data/llm_cache/local/weak/*.jsonl`)
+
+1. **Screening**: prompt `default`, styles `base` then `system` (the most effective style against
+   Sonnet 4.5 in experiment 3): 2 runs of 50.
+2. **Full run**: the style with the higher screening success (tie: `base`) on the full suite
+   (18 benign + 150 attacked, three conditions), prompt `default`. If both screen at 0, the full
+   run is still made with `base`, because the benign utility and the layer's cost on a weak
+   agent are a result of their own.
+3. No other configuration is run under this registration.
+
+### Predictions (written before any scored run)
+
+| Quantity | Prediction |
+| --- | --- |
+| Screening, `base`, success of 50 | 5% to 50% (point guess 20%) |
+| Screening, `system` vs `base` | `system` higher |
+| Full run, `none` attack success | 10% to 50% of 150 (point guess 25%) |
+| Full run, `intended: args` under `args` and `full` | 0 successes in both (probability 70%); any success is a labelling failure, listed with its labels |
+| `J11`, `J12` (`session`) | executed ones are not stopped by `args`; `full` stops them only after a meter read |
+| Benign utility, `none` | 10 to 17 of 18 (point guess 14): lower than Sonnet's 16 because a small model miscalls tools |
+| At least one `error` call (invalid arguments) in the full run | probability 70% |
+
+### Decision rules (fixed before scoring)
+
+Rules 1, 2 and 4 of experiment 3 apply unchanged (live configuration; a success of an
+`intended: args` attack under `args` or `full` is a labelling failure; nothing changes after the
+first scored run). Rule 3 is replaced by schedule item 2: a weak agent that obeys nothing is
+reported as that, with its utility.
+
+### Limits
+
+One model, one quantization, one prompt, single samples on a server shared with other users (a
+slow call is retried, never skipped). The scenarios, payloads and checkers are the author's.
