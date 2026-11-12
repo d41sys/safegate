@@ -152,6 +152,14 @@ rules:
     action: refuse
     priority: 85
 
+  - id: block-classifier-sexual-minors
+    description: "Refuse content flagged by the content classifier as sexual content involving minors"
+    applies_to: both
+    match:
+      classifier_category: sexual_minors
+    action: refuse
+    priority: 85
+
   - id: escalate-classifier-error
     description: "Escalate when a configured remote classifier fails, instead of passing unchecked"
     applies_to: both

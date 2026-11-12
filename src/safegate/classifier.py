@@ -73,6 +73,23 @@ class KeywordClassifier:
         )
 
 
+# OpenAI moderation category (SDK field name) -> the category the default rules match on.
+_OPENAI_TO_RULE_CATEGORY = {
+    "harassment": "hate",
+    "harassment_threatening": "hate",
+    "hate": "hate",
+    "hate_threatening": "hate",
+    "violence": "violence",
+    "violence_graphic": "violence",
+    "illicit_violent": "violence",
+    "illicit": "illicit_goods",
+    "self_harm": "self_harm",
+    "self_harm_intent": "self_harm",
+    "self_harm_instructions": "self_harm",
+    "sexual_minors": "sexual_minors",
+}
+
+
 class OpenAIModerationClassifier:
     """Content classifier backed by OpenAI's Moderation API endpoint."""
 
@@ -81,12 +98,10 @@ class OpenAIModerationClassifier:
         self._client: Any = None
 
         if self.api_key:
-            try:
-                import openai
+            # A key without the [openai] extra must not silently pass everything: let it raise.
+            import openai
 
-                self._client = openai.OpenAI(api_key=self.api_key)
-            except ImportError:
-                self._client = None
+            self._client = openai.OpenAI(api_key=self.api_key)
 
     @property
     def is_available(self) -> bool:
@@ -104,7 +119,11 @@ class OpenAIModerationClassifier:
             response = client.moderations.create(input=text)
             result = response.results[0]
             flagged = bool(result.flagged)
-            categories = {k: float(v) for k, v in result.category_scores.model_dump().items()}
+            raw = {k: float(v) for k, v in result.category_scores.model_dump().items()}
+            categories = dict(raw)
+            for name, score in raw.items():
+                if mapped := _OPENAI_TO_RULE_CATEGORY.get(name):
+                    categories[mapped] = max(categories.get(mapped, 0.0), score)
             reasons = [
                 f"OpenAI Moderation flagged: {k}"
                 for k, v in result.categories.model_dump().items()

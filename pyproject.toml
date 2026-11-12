@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "safegate"
-version = "0.1.1"
+version = "0.1.2"
 description = "Constitutional safety gate with prompt injection detection, content classification, and streaming output filtering"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"

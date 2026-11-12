@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -365,18 +368,44 @@ def test_keyword_classifier_allows_benign() -> None:
     assert res.flagged is False
 
 
-def test_remote_classifier_error_escalates_instead_of_allowing() -> None:
-    class DownClient:
-        class moderations:
-            @staticmethod
-            def create(input: str) -> None:
-                raise TimeoutError("moderation endpoint timed out")
-
+def _openai_classifier(monkeypatch: pytest.MonkeyPatch, create: Any) -> OpenAIModerationClassifier:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     clf = OpenAIModerationClassifier()
-    clf._client = DownClient()
-    decision = SafetyGate(classifier=clf).check_input("tell me about heat pumps")
+    clf._client = SimpleNamespace(moderations=SimpleNamespace(create=create))
+    return clf
+
+
+def test_remote_classifier_error_escalates_instead_of_allowing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def create(input: str) -> None:
+        raise TimeoutError("moderation endpoint timed out")
+
+    decision = SafetyGate(classifier=_openai_classifier(monkeypatch, create)).check_input(
+        "tell me about heat pumps"
+    )
     assert decision.action == "escalate"
     assert "escalate-classifier-error" in decision.rule_ids
+
+
+def test_openai_categories_reach_default_rules(monkeypatch: pytest.MonkeyPatch) -> None:
+    # SDK field names (sexual_minors, illicit) differ from the default rules' categories.
+    def create(input: str) -> Any:
+        scores = {"sexual_minors": 0.9, "illicit": 0.1, "harassment": 0.0}
+        dump = SimpleNamespace(model_dump=lambda: scores)
+        flags = SimpleNamespace(model_dump=lambda: {k: v >= 0.5 for k, v in scores.items()})
+        result = SimpleNamespace(flagged=True, category_scores=dump, categories=flags)
+        return SimpleNamespace(results=[result])
+
+    decision = SafetyGate(classifier=_openai_classifier(monkeypatch, create)).check_input("x")
+    assert decision.action == "refuse"
+    assert "block-classifier-sexual-minors" in decision.rule_ids
+
+
+def test_openai_key_without_extra_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "openai", None)  # import openai -> ImportError
+    with pytest.raises(ImportError):
+        OpenAIModerationClassifier(api_key="sk-test")
 
 
 def test_composite_classifier_max_aggregation() -> None:
