@@ -8,11 +8,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]  # the requires-python range; ezcross-ems backend allows both
     env:
       UV_TORCH_BACKEND: cpu
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run ruff format --check .

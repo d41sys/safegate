@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
+
 from safegate.classifier import (
     CompositeClassifier,
     ContentClassificationResult,
@@ -70,4 +72,4 @@ __all__ = [
     "user",
 ]
 
-__version__ = "0.1.0"
+__version__ = version("safegate")
