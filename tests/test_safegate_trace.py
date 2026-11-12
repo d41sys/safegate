@@ -40,14 +40,15 @@ def test_mid_stream_refuse_stops_before_later_chunks() -> None:
     assert len(consumed) == 2  # third chunk never pulled from the model
 
 
-def test_post_gen_classifier_catches_what_stream_rules_cannot() -> None:
-    # Stream rules are regex-only; the classifier marker only exists in the full output.
+def test_classifier_rule_stops_the_stream() -> None:
+    # The classifier marker is split across chunks; the stream buffer reassembles it, so the
+    # classifier rule fires during generation, not only post-gen.
     llm = MockStreamingLLM({"guide": ["Here is the <VIOLENCE_", "REQUEST> you asked for."]})
 
     output, trace = SafetyGate().run("write a guide", llm)
 
     assert output == WITHHELD_MESSAGE
-    assert _stages(trace.to_dict())[-1] == ("post_gen", "refuse")
+    assert _stages(trace.to_dict())[-1] == ("during_gen", "refuse")
     assert "block-classifier-violence" in trace.checkpoints[-1].rule_ids
 
 

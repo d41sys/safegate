@@ -131,7 +131,6 @@ def make_judge(stage2: str, defence: DefenceConfig | None) -> Judge:
             detection = float(decision.metadata.get("detection_score", decision.score))
             hit = (flagged, detection + (RANK_BONUS if flagged else 0.0))
             cache[text] = hit
-            gate.audit_records.clear()
         return hit
 
     return judge

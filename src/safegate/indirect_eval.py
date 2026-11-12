@@ -447,7 +447,6 @@ def time_gate(stage2: str, texts: Sequence[str], passes: int = 3) -> float:
         for t in texts:
             gate.check_input(t)
         laps.append((time.perf_counter() - start) * 1000 / len(texts))
-        gate.audit_records.clear()
     return float(np.median(laps))
 
 

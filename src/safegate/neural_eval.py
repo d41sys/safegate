@@ -239,7 +239,6 @@ class GateReader:
         start = time.perf_counter()
         decision = self.gate.check_input(text)
         elapsed = time.perf_counter() - start
-        self.gate.audit_records.clear()
         score = float(decision.metadata.get("detection_score", decision.score))
         return GateRead(decision.action, score), elapsed
 

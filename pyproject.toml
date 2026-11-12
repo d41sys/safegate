@@ -38,6 +38,13 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 strict = true
 ignore_missing_imports = true
 
+# torch is the optional [guard] extra: without it (CI) nn.Module is Any and the ignores are
+# unused, with it they are needed; these two flags give the same result in both environments.
+[[tool.mypy.overrides]]
+module = "safegate.neural"
+warn_unused_ignores = false
+disallow_subclassing_any = false
+
 [tool.pytest.ini_options]
 markers = ["slow: trains models / downloads data", "network: needs internet"]
 addopts = "-m 'not slow and not network'"

@@ -94,7 +94,6 @@ def make_gate_oracle(stage2: str) -> GateOracle:
             blocked = decision.action in BLOCKING_ACTIONS
             hit = (blocked, decision.score if blocked else ALLOWED)
             cache[text] = hit
-            gate.audit_records.clear()
         return hit
 
     return GateOracle(lambda t: verdict(t)[0], lambda t: verdict(t)[1])

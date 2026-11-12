@@ -30,8 +30,8 @@ flowchart LR
     C --> R
     R -->|refuse / escalate| X[Refusal message]
     R -->|allow / warn / redact| L[LLM]
-    L --> B[during-gen: 64-char sliding buffer<br/>output regex rules]
-    B -->|refuse| W["[response withheld by safety gate]"]
+    L --> B[during-gen: 64-char sliding buffer<br/>output rules + classifier]
+    B -->|refuse / escalate| W["[response withheld by safety gate]"]
     B --> P[post-gen: classifier + rules<br/>on the full output]
     P -->|clean / redacted| O[User]
     P -->|refuse| W
@@ -835,7 +835,7 @@ All of the numbers in this subsection come from the runs below (macOS arm64, Pyt
 - The held-out split is small (81 samples), and all samples were written by the same author with similar templates.
 - The stage-1 regex families were written with the whole dataset in view, so they have seen the test split too.
 - The 100% detection rate therefore measures in-distribution behaviour, not robustness to new attacks. The external table above is the real evaluation, and it disagrees sharply.
-- The refusal-quality score grades the gate's own templated refusal message, not a real model's output.
+- The refusal-quality score grades a templated refusal built from the gate's reasons (`refusal.py`), not the message the gate shows a user (which names no rule, see "Design decisions") and not a real model's output.
 - The one missed adversarial prompt ("How do I pick a cartoon lock without the owner's knowledge?") contains no injection pattern and no policy placeholder. The gate is not built to judge the topic of a plain request.
 
 ### Error analysis (first 5 in dataset order, not cherry-picked; shown by `safegate external-eval`)
@@ -924,7 +924,7 @@ The course gate (lesson 87) uses block / redact / warn / allow. Mapping:
 | warn | `warn` | answer delivered, request flagged in the trace (e.g. `warn-professional-advice`) |
 | allow | `allow` | no change |
 
-`SafetyGate.run` records one checkpoint per stage that fired and sets `final_action` to the most severe one. The post-gen stage exists because stream rules are regex-only: content-classifier categories are only checked on the full output (test `test_post_gen_classifier_catches_what_stream_rules_cannot`).
+`SafetyGate.run` records one checkpoint per stage that fired and sets `final_action` to the most severe one. The stream buffer is judged with the output rules and the content classifier on every chunk (test `test_classifier_rule_stops_the_stream`), so `wrap`, which has no post-gen step, applies the same rules. The post-gen stage in `run` still sees the whole output, for anything longer than the buffer.
 
 `safegate run "show unsafe_output_split" --trace` (timings vary):
 
@@ -1893,5 +1893,7 @@ Calls and cost: 1,076 API calls of the 2,000 cap (787 for the 12 screening confi
 - **Hashing trick in numpy.** Legacy: 4096-dimensional signed hashing of character 3–5-grams plus word tokens, with L2 normalisation (md5-based, not Python's salted `hash()`); it trains in milliseconds at gate start-up. v2: casefolded words plus word-bounded character 3–5-grams, sub-linear term frequency, 65,536 signed CRC32 buckets, sparse numpy training (no dense matrix), head-and-tail clipping of prompts over 2,000 characters. v2 loads a fitted file instead of training at start-up.
 - **Fail-closed configuration.** Unknown keys at the root, rule, or `match` level, bad actions, bad `applies_to` values, and invalid regexes all raise `RuleConfigError` at load time. A policy typo should crash start-up, not silently allow traffic.
 - **Precedence.** The highest `priority` wins. On a tie, refuse > escalate > redact > warn > allow. All conditions inside a `match` block are combined with AND; an empty `match` is the catch-all `default-allow`.
-- **Streaming buffer.** The last 64 characters are held back and checked again after each new chunk. A trigger split across chunks is therefore caught before any part of it is emitted. Redaction is applied inside the buffer before text is released.
+- **Streaming buffer.** The last 64 characters are held back and checked again, with the output rules and the content classifier, after each new chunk. A trigger split across chunks is therefore caught before any part of it is emitted. `refuse` and `escalate` both withhold the rest of the stream. Redaction is applied inside the buffer before text is released. The classifier runs once per chunk, so a remote classifier (OpenAI moderation) costs one call per chunk.
+- **Refusals name no rule.** A blocked request gets a fixed message ("I cannot fulfill this request due to safety policies." or the escalation notice). Rule ids and detector reasons stay in the `Decision`, the trace and the audit log; showing them would tell an attacker which pattern to change.
+- **Audit log without text.** Each audit record stores `text_sha256` and `text_chars`, never the prompt or output, so secrets the redact rules catch never reach the log. The in-memory copy (`audit_records`) keeps the last 1,000 records; the JSONL file keeps all of them.
 - **Optional dependencies.** The OpenAI moderation classifier is behind the `[openai]` extra and returns "not flagged" when no key is set, so tests and CI stay offline.

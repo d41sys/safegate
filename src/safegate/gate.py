@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-import re
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -25,6 +26,9 @@ from safegate.rules import (
 )
 
 WITHHELD_MESSAGE = "\n[response withheld by safety gate]"
+REFUSE_MESSAGE = "I cannot fulfill this request due to safety policies."
+ESCALATE_MESSAGE = "This request has been escalated for administrative review."
+AUDIT_MEMORY = 1000  # in-memory audit records kept; the JSONL file keeps everything
 BLOCKING_ACTIONS = frozenset({"refuse", "escalate"})
 _SEVERITY: dict[str, int] = {action: rank for action, rank in ACTION_PRECEDENCE.items()}
 
@@ -112,14 +116,19 @@ class SafetyGate:
         self.audit_log_path = Path(audit_log_path) if audit_log_path else None
         self.buffer_size = buffer_size
         self.defence = defence
-        self.audit_records: list[dict[str, Any]] = []
+        self.audit_records: deque[dict[str, Any]] = deque(maxlen=AUDIT_MEMORY)
 
     def _log_decision(self, target: str, text: str, decision: Decision) -> None:
-        """Record an audit trail entry in memory and append to JSONL if configured."""
+        """Record an audit trail entry in memory and append to JSONL if configured.
+
+        The text is stored as a hash and a length, never verbatim, so prompts and secrets
+        stay out of the log; the caller's trace keeps the text if it needs it.
+        """
         record = {
             "timestamp": time.time(),
             "target": target,
-            "text_preview": text[:100] + ("..." if len(text) > 100 else ""),
+            "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "text_chars": len(text),
             "action": decision.action,
             "rule_ids": decision.rule_ids,
             "reasons": decision.reasons,
@@ -217,104 +226,69 @@ class SafetyGate:
     def stream_output(
         self, chunks: Iterable[str], trace: RequestTrace | None = None
     ) -> Iterator[str]:
-        """Filter a stream through a sliding buffer; stop early on a mid-stream refuse.
+        """Filter a stream through a sliding buffer; stop early on a mid-stream refuse or escalate.
 
+        Each chunk re-checks the held-back buffer with the output rules and the content
+        classifier, so classifier rules apply mid-stream (and in ``wrap``), not only post-gen.
         With ``trace``, every chunk that triggers an output rule is recorded as a
         ``during_gen`` checkpoint.
         """
         buf = ""
-
-        output_rules = [r for r in self.rules_engine.rules if r.applies_to in ("output", "both")]
-
-        def evaluate_buffer(content: str) -> tuple[str, list[Rule], str]:
-            """Check rules on buffer. Returns (action, matching_rules, redacted_content)."""
-            redacted = content
-            violating_rules: list[Rule] = []
-            highest_action = "allow"
-
-            for rule in output_rules:
-                if rule.matches(redacted):
-                    violating_rules.append(rule)
-                    if _SEVERITY[rule.action] > _SEVERITY[highest_action]:
-                        highest_action = rule.action
-                    if rule.action == "redact":
-                        if rule.match.regex:
-                            redacted = re.sub(
-                                rule.match.regex,
-                                f"[REDACTED:{rule.id}]",
-                                redacted,
-                            )
-                        else:
-                            redacted = f"[REDACTED:{rule.id}]"
-
-            # Catch-all allow rules match everything; keep them out of decisions and traces.
-            return highest_action, [r for r in violating_rules if r.action != "allow"], redacted
-
-        def note(action: str, rules: list[Rule], chunk_index: int) -> None:
-            if trace is not None and action != "allow":
-                trace.record(
-                    Checkpoint(
-                        stage="during_gen",
-                        action=action,
-                        rule_ids=[r.id for r in rules],
-                        signals={"chunk_index": chunk_index},
-                        elapsed_ms=trace.elapsed_ms(),
-                    )
-                )
-
-        index = -1
         for index, chunk in enumerate(chunks):
-            buf += chunk
-            action, matched_rules, redacted_buf = evaluate_buffer(buf)
-            note(action, matched_rules, index)
-
-            if action == "refuse":
-                dec = Decision(
-                    action="refuse",
-                    rule_ids=[r.id for r in matched_rules],
-                    reasons=[f"Output safety violation: {r.description}" for r in matched_rules],
-                )
-                self._log_decision("output", buf, dec)
+            buf, withheld = self._check_output(buf + chunk, index, trace)
+            if withheld:
                 yield WITHHELD_MESSAGE
                 return
-
-            if action == "redact":
-                buf = redacted_buf
-
             if len(buf) > self.buffer_size:
                 emit_len = len(buf) - self.buffer_size
-                to_emit = buf[:emit_len]
+                yield buf[:emit_len]
                 buf = buf[emit_len:]
-                yield to_emit
-
-        # Final flush on stream exhaustion
+        # The tail was checked as part of the last buffer; release it.
         if buf:
-            action, matched_rules, redacted_buf = evaluate_buffer(buf)
-            if action == "refuse":
-                note(action, matched_rules, index)
-                dec = Decision(
-                    action="refuse",
-                    rule_ids=[r.id for r in matched_rules],
-                    reasons=[f"Output safety violation: {r.description}" for r in matched_rules],
-                )
-                self._log_decision("output", buf, dec)
-                yield WITHHELD_MESSAGE
-                return
-            if action == "redact":
-                buf = redacted_buf
             yield buf
+
+    def _check_output(
+        self, buf: str, chunk_index: int, trace: RequestTrace | None
+    ) -> tuple[str, bool]:
+        """Judge the stream buffer like a full output; return (buffer to keep, withheld)."""
+        result = self.rules_engine.evaluate(
+            buf, "output", classification=self.classifier.classify(buf)
+        )
+        # Catch-all allow rules match everything; keep them out of decisions and traces.
+        rules: list[Rule] = [r for r in result.matched_rules if r.action != "allow"]
+        if trace is not None and result.action != "allow":
+            trace.record(
+                Checkpoint(
+                    stage="during_gen",
+                    action=result.action,
+                    rule_ids=[r.id for r in rules],
+                    signals={"chunk_index": chunk_index},
+                    elapsed_ms=trace.elapsed_ms(),
+                )
+            )
+        if result.action in BLOCKING_ACTIONS:
+            decision = Decision(
+                action=result.action,
+                rule_ids=[r.id for r in rules],
+                reasons=[f"Output safety violation: {r.description}" for r in rules],
+            )
+            self._log_decision("output", buf, decision)
+            return buf, True
+        if result.action == "redact" and result.redacted_text is not None:
+            return result.redacted_text, False
+        return buf, False
 
     @staticmethod
     def _input_block_message(decision: Decision) -> str | None:
-        """Text returned instead of calling the model, or None when the model may run."""
+        """Text returned instead of calling the model, or None when the model may run.
+
+        The message never names the rule or the detector signal: that would tell an
+        attacker what to change. The reasons stay in the decision and the audit log.
+        """
         if decision.action == "refuse":
-            return "I cannot fulfill this request due to safety policies: " + ", ".join(
-                decision.reasons
-            )
+            return REFUSE_MESSAGE
         if decision.action == "escalate":
-            return "This request has been escalated for administrative review: " + ", ".join(
-                decision.reasons
-            )
+            return ESCALATE_MESSAGE
         return None
 
     @staticmethod

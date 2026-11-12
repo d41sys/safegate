@@ -220,7 +220,6 @@ def gate_actions(texts: Sequence[str], stage2: str = "v2") -> list[str]:
     out: list[str] = []
     for t in texts:
         out.append(gate.check_input(t).action)
-        gate.audit_records.clear()
     return out
 
 
