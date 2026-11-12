@@ -116,6 +116,14 @@ safe_llm = gate.wrap(MockStreamingLLM())
 print("".join(safe_llm("tell me about heat pumps")))
 ```
 
+Install into another project (for example the ezcross-ems backend) from a GitHub Release, no clone needed:
+
+```bash
+uv add https://github.com/d41sys/safegate/releases/download/v0.1.0/safegate-0.1.0-py3-none-any.whl
+```
+
+CI (`.github/workflows/ci.yml`) runs ruff, format check, mypy and pytest on every push and pull request. Releases (`release.yml`): bump `version` in `pyproject.toml`, push a tag `v<version>`; the workflow re-runs the tests, checks the tag matches the version, builds the wheel and sdist and attaches them to a GitHub Release.
+
 ## Comparison with SOTA
 
 **Verdict first: safegate is not competitive with fine-tuned guards on detection. Its advantages are false positives on benign text, cost and inspectability.** Across the twelve public sets scored here (three from the InjecGuard paper, nine further ones) it beats only the weakest published guards: ProtectAI v1 and v2 on PromptShield AUC, Prompt Guard 2 86M on deepset and Prompt Guard 2 22M on S-Labs. It ties InjecGuard at 1% FPR on PromptShield. It loses to PIGuard, Prompt Guard 2 86M, Sentinel and the fine-tuned PromptShield models on most other sets, and by a wide margin at low false-positive rates. It is a 2 ms, model-free, inspectable pre-filter, not a replacement for a fine-tuned guard. Phase K (30 Oct 2026) measured the obvious fix, a small transformer behind the gate: PIGuard as an escalation stage recovers 9.3 of the 12.7 points between safegate and PIGuard's published mean on the InjecGuard trio (73.9% against 77.3%, 95% interval [71.0%, 76.7%]) and sends 40% of the trio rows to a 20-35 ms model (section 1c). Retraining the classical stage 2 on indirect-injection data did not help (section 1d).
