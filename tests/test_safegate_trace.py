@@ -1,4 +1,4 @@
-"""Per-request trace, warn action, and the three-checkpoint run (lesson 87)."""
+"""Per-request trace, warn action, and the three-checkpoint run."""
 
 from __future__ import annotations
 

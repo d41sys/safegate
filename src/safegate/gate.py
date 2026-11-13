@@ -46,7 +46,7 @@ class Checkpoint:
 
 @dataclass
 class RequestTrace:
-    """Per-request audit trace across the three checkpoints (lesson 87)."""
+    """Per-request audit trace across the three checkpoints."""
 
     request_id: str
     prompt_preview: str

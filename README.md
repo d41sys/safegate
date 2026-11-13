@@ -2,7 +2,7 @@
 
 A safety gate for LLM apps. It checks every prompt before the model sees it, and checks every streamed token before the user sees it. Offline by default: numpy + PyYAML, no model downloads (the optional `[guard]` extra loads two public transformer guards for `safegate neural-eval`, section 1c of the SOTA comparison). Only `safegate external-eval`, `stage2-report`, `stage2-train` and `lodo-report` touch the network (they download public datasets, stdlib only), and `tool-eval --agent`, `benchmark --guard` and `guard-dev` call the Anthropic API when their cache lacks a request (stdlib `urllib`, key from `ANTHROPIC_API_KEY`, every reply cached in `data/llm_cache/` and committed, so scoring replays offline with `--llm-offline`).
 
-Covers lessons 82–87 of *AI Engineering from Scratch*: jailbreak taxonomy, prompt-injection detection, refusal evaluation, content classification, a constitutional rules engine, and an end-to-end gate.
+Components: jailbreak taxonomy, prompt-injection detection, refusal evaluation, content classification, a constitutional rules engine, and an end-to-end gate.
 
 > **Safety note:** this package contains no real harmful content. Attack samples use placeholders such as `<HARMFUL_REQUEST>`, `<WEAPON_PAYLOAD>` or "how to pick a cartoon lock".
 
@@ -922,9 +922,9 @@ rules:    default-allow
 
 ### Actions and the per-request trace
 
-The course gate (lesson 87) uses block / redact / warn / allow. Mapping:
+Common gate vocabulary is block / redact / warn / allow. Mapping:
 
-| Course action | safegate action | Effect |
+| Common action | safegate action | Effect |
 | --- | --- | --- |
 | block | `refuse` | model not called (pre-gen) or output withheld (during/post-gen) |
 | block + human review | `escalate` | as `refuse`, flagged for review |

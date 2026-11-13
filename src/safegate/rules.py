@@ -13,7 +13,7 @@ import yaml
 from safegate.classifier import ContentClassificationResult
 from safegate.injection import Detection
 
-# Course vocabulary (lesson 87): block / redact / warn / allow. "refuse" is the block
+# Common gate vocabulary: block / redact / warn / allow. "refuse" is the block
 # action; "escalate" blocks and routes the request to a human reviewer.
 RuleAction = Literal["allow", "warn", "redact", "refuse", "escalate"]
 AppliesTo = Literal["input", "output", "both"]
