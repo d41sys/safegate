@@ -976,12 +976,13 @@ def _tool_eval_llm(args: argparse.Namespace, policy: ToolPolicy | None) -> int:
         cache_name = "tool-eval-dev.jsonl" if args.dev else "tool-eval.jsonl"
         if stress and not args.dev:
             cache_name = f"tool-eval-{args.agent_prompt}.jsonl"
+        stem = model.replace(":", "-")  # Ollama tags (qwen3:8b) are not valid Windows file names
         if args.payload_style in STRING_STYLES:
             # experiment 4 (string styles): its own cache directory, so its call ledger is its own
-            cache_name = f"strings/{model}-dev.jsonl" if args.dev else f"strings/{model}.jsonl"
+            cache_name = f"strings/{stem}-dev.jsonl" if args.dev else f"strings/{stem}.jsonl"
         elif model != MODEL or args.payload_style != "base" or args.screen:
             # experiment 3 (other models, payload styles, screening): one cache file per model
-            cache_name = f"weak/{model}-dev.jsonl" if args.dev else f"weak/{model}.jsonl"
+            cache_name = f"weak/{stem}-dev.jsonl" if args.dev else f"weak/{stem}.jsonl"
         client = _llm_client(args, model, transport, cache_name)
         recorded = load_tool_policy(Path(args.recorded_under)) if args.recorded_under else None
         if args.dev:

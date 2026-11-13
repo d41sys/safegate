@@ -23,7 +23,7 @@ DEFAULT = load_tool_policy(POLICY_PATH)
 
 @cache
 def _suite(style: str, screen: str | None) -> LLMSuiteResult:
-    client = AnthropicClient(LOCAL / f"{MODEL}.jsonl", model=MODEL, offline=True)
+    client = AnthropicClient(LOCAL / "qwen3-8b.jsonl", model=MODEL, offline=True)
     return run_llm_suite(
         client,
         DEFAULT,

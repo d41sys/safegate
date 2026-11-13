@@ -389,11 +389,13 @@ def test_remote_classifier_error_escalates_instead_of_allowing(
 
 
 def test_openai_categories_reach_default_rules(monkeypatch: pytest.MonkeyPatch) -> None:
-    # SDK field names (sexual_minors, illicit) differ from the default rules' categories.
+    # SDK field names (sexual_minors, illicit) differ from the default rules' categories, and
+    # OpenAI flags sexual_minors at its own threshold, here a score of 0.3 (below the rules' 0.5).
     def create(input: str) -> Any:
-        scores = {"sexual_minors": 0.9, "illicit": 0.1, "harassment": 0.0}
+        scores = {"sexual_minors": 0.3, "illicit": 0.1, "harassment": 0.0}
         dump = SimpleNamespace(model_dump=lambda: scores)
-        flags = SimpleNamespace(model_dump=lambda: {k: v >= 0.5 for k, v in scores.items()})
+        flagged = {"sexual_minors": True, "illicit": False, "harassment": False}
+        flags = SimpleNamespace(model_dump=lambda: flagged)
         result = SimpleNamespace(flagged=True, category_scores=dump, categories=flags)
         return SimpleNamespace(results=[result])
 

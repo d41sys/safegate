@@ -120,15 +120,16 @@ class OpenAIModerationClassifier:
             result = response.results[0]
             flagged = bool(result.flagged)
             raw = {k: float(v) for k, v in result.category_scores.model_dump().items()}
+            flags = {k: bool(v) for k, v in result.categories.model_dump().items()}
+            # OpenAI flags by its own per-category thresholds, some below the rules' 0.5 cut-off.
+            for name in raw:
+                if flags.get(name):
+                    raw[name] = 1.0
             categories = dict(raw)
             for name, score in raw.items():
                 if mapped := _OPENAI_TO_RULE_CATEGORY.get(name):
                     categories[mapped] = max(categories.get(mapped, 0.0), score)
-            reasons = [
-                f"OpenAI Moderation flagged: {k}"
-                for k, v in result.categories.model_dump().items()
-                if v
-            ]
+            reasons = [f"OpenAI Moderation flagged: {k}" for k, v in flags.items() if v]
             return ContentClassificationResult(
                 flagged=flagged,
                 categories=categories,

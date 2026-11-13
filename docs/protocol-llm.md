@@ -912,7 +912,7 @@ model's own resistance is weakest.
 **Disclosure of timing.** Written after the `openai:` transport was added
 (`llm.openai_transport`, translating the cached Anthropic request shape to an OpenAI-compatible
 `/chat/completions` call and back) and after one plumbing run (`--dev`: 3 cases outside the suite,
-3 conditions, 5 calls, cache `data/llm_cache/local/weak/qwen3:8b-dev.jsonl`). Nothing was scored.
+3 conditions, 5 calls, cache `data/llm_cache/local/weak/qwen3-8b-dev.jsonl`). Nothing was scored.
 
 ### Fixed before scoring
 
@@ -970,7 +970,7 @@ slow call is retried, never skipped). The scenarios, payloads and checkers are t
 
 `qwen3:8b via OpenAI-compatible API, 2026-11-13, no logprobs`; the model id returned on every call
 was `qwen3:8b`. Pinned offline in `tests/test_local_results.py`; cache
-`data/llm_cache/local/weak/qwen3:8b.jsonl` (committed). Calls: 502 scored plus 5 plumbing, 0
+`data/llm_cache/local/weak/qwen3-8b.jsonl` (committed). Calls: 502 scored plus 5 plumbing, 0
 retried, 533,334 input and 186,152 output tokens, about 50 minutes of wall time on the shared
 server; no API cost. 23 of the 502 calls (4.6%) stopped at `max_tokens` (the thinking text counts
 against the 1,024-token cap).
