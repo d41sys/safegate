@@ -119,6 +119,10 @@ def _arg_policy(arg: str) -> str:
         _arg_policy("untrusted: allow, untrusted_sources: []"),
         _arg_policy("untrusted: allow, untrusted_sources: [a b]"),
         _arg_policy("untrusted: allow, untrusted_sources: [unlabeled]"),
+        "session_limits: {state-change: 0}\ntools: {t: {capability: read}}",
+        "session_limits: {state-change: true}\ntools: {t: {capability: read}}",
+        "session_limits: {deploy: 2}\ntools: {t: {capability: read}}",
+        "session_limits: [state-change]\ntools: {t: {capability: read}}",
         "- a list",
     ],
 )
@@ -440,6 +444,30 @@ def test_untrusted_session_admit_does_not_record_an_escalated_reboot() -> None:
     assert s.consequential is False  # it did not run
 
 
+# --- session_limits --------------------------------------------------------------------------
+
+
+def test_session_limit_escalates_the_call_past_the_cap_and_counts_only_recorded_calls() -> None:
+    text = (EXAMPLES / "energy.yaml").read_text(encoding="utf-8")
+    policy = load_tool_policy(
+        text.replace("tools:\n", "session_limits: {state-change: 2}\ntools:\n", 1)
+    )
+    cap = ToolCall("set_export_cap", {"cap_kw": 1.0})
+    owner = {"cap_kw": ["trusted_user"]}
+    s = Session()
+    assert s.admit(ToolCall("read_calendar"), {}, policy).action == "allow"  # reads are not capped
+    assert [s.admit(cap, owner, policy).action for _ in range(3)] == ["allow", "allow", "escalate"]
+    assert s.calls == {"read": 1, "state-change": 2}  # the escalated call did not run
+    d = check_tool_call(cap, owner, policy, s)
+    assert d.rule_ids == ["tool-session-limit"]
+    # a human approves it: the host records it, and the next one is escalated as well
+    s.record(cap, owner, policy)
+    assert check_tool_call(cap, owner, policy, s).action == "escalate"
+    # no session, or the default policy without limits: not checked
+    assert check_tool_call(cap, owner, policy).action == "allow"
+    assert check_tool_call(cap, owner, POLICY, s).action == "allow"
+
+
 def test_session_admit_records_only_executed_calls_and_completes_the_trifecta_in_order() -> None:
     s = Session()
     read_mail = ToolCall("read_inbox")
@@ -513,6 +541,32 @@ def test_tool_check_cli_exit_codes(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["tool-check", str(EXAMPLES / "call_hour_web.json"), "--policy", policy]) == 0
     assert main(["tool-check", str(EXAMPLES / "call_hour_email.json"), "--policy", policy]) == 1
     assert main(["tool-check", str(EXAMPLES / "call_hour_email.json"), "--policy", noegress]) == 0
+
+
+def test_tool_check_cli_reads_session_call_counts(tmp_path: Path) -> None:
+    # the host keeps the session between HTTP requests and sends its counts with each call
+    text = (EXAMPLES / "energy.yaml").read_text(encoding="utf-8")
+    policy = tmp_path / "limited.yaml"
+    policy.write_text(text.replace("tools:\n", "session_limits: {state-change: 2}\ntools:\n", 1))
+    call = tmp_path / "call.json"
+
+    def check(session: dict[str, Any]) -> int:
+        call.write_text(
+            json.dumps(
+                {
+                    "tool": "set_export_cap",
+                    "args": {"cap_kw": 1.0},
+                    "labels": {"cap_kw": ["trusted_user"]},
+                    "session": session,
+                }
+            )
+        )
+        return main(["tool-check", str(call), "--policy", str(policy)])
+
+    assert check({"calls": {"state-change": 1}}) == 0
+    assert check({"calls": {"state-change": 2}}) == 1
+    assert check({"calls": {"state-change": -1}}) == 2
+    assert check({"calls": {"state-change": True}}) == 2
 
 
 def test_tool_check_cli_bad_input_exits_2(tmp_path: Path) -> None:

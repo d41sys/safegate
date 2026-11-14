@@ -21,6 +21,10 @@ A tool may also declare ``untrusted_session: escalate`` (or ``refuse``): a ``sta
 none) is then escalated (or refused) whenever the session has ingested untrusted data, sensitive
 or not.
 
+``session_limits`` caps how many calls of a capability class one session may run
+(``session_limits: {state-change: 5}``); the call past the cap is escalated
+(``tool-session-limit``), so a drip of individually valid changes needs a human after N.
+
 ``check_tool_call`` returns the same ``Decision`` as the text gate and ``check_spec``.
 
 Limits, by design:
@@ -81,7 +85,7 @@ _ARG_TYPES = ("number", "string", "boolean")
 _UNTRUSTED_MODES = ("forbid", "allow")
 _UNTRUSTED_SESSION_MODES = ("allow", "escalate", "refuse")
 
-_ROOT_KEYS = {"version", "on_violation", "rule_of_two", "egress", "tools"}
+_ROOT_KEYS = {"version", "on_violation", "rule_of_two", "egress", "session_limits", "tools"}
 _EGRESS_KEYS = {
     "allowed_hosts",
     "internal_domains",
@@ -202,12 +206,14 @@ class ToolPolicy:
     """Declared tools plus the action taken on a violation. Tools not listed are refused.
 
     ``egress`` is optional: without it replies and text arguments are not scanned for hosts.
+    ``session_limits`` maps a capability class to the calls of it one session may run.
     """
 
     tools: dict[str, ToolSpec]
     on_violation: str = "refuse"
     rule_of_two: str = "escalate"
     egress: EgressPolicy | None = None
+    session_limits: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ToolPolicy:
@@ -243,7 +249,13 @@ class ToolPolicy:
                             f"tools.{tool_name}.args.{arg_name}.recipient_of: "
                             f"{target!r} is not another argument of the tool"
                         )
-        return cls(tools=tools, on_violation=on_violation, rule_of_two=rule_of_two, egress=egress)
+        return cls(
+            tools=tools,
+            on_violation=on_violation,
+            rule_of_two=rule_of_two,
+            egress=egress,
+            session_limits=_parse_session_limits(data.get("session_limits", {})),
+        )
 
     def label_result(
         self, tool: str, value: Any, arg_labels: Iterable[Iterable[str]] = ()
@@ -420,6 +432,16 @@ def _parse_egress(raw: Any) -> EgressPolicy:
     )
 
 
+def _parse_session_limits(raw: Any) -> dict[str, int]:
+    limits = dict(_mapping(raw, "session_limits"))
+    for capability, limit in limits.items():
+        if capability not in CAPABILITIES:
+            raise ToolPolicyError(f"session_limits: {capability!r} is not one of {CAPABILITIES}")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ToolPolicyError(f"session_limits.{capability} must be a positive integer")
+    return limits
+
+
 def _parse_tool(name: str, raw: Any) -> ToolSpec:
     where = f"tools.{name}"
     body = _mapping(raw, where)
@@ -506,15 +528,17 @@ def call_from_labeled(
 
 @dataclass
 class Session:
-    """What a session has seen and done so far, for the Rule-of-Two check.
+    """What a session has seen and done so far, for the Rule-of-Two check and session limits.
 
     ``labels`` is the union of the labels of everything admitted into the agent's context
     (arguments and declared results of admitted calls, plus whatever ``observe`` adds).
     ``consequential`` is set once a ``state-change`` or ``external-send`` call was admitted.
+    ``calls`` counts the recorded calls per capability class.
     """
 
     labels: set[str] = field(default_factory=set)
     consequential: bool = False
+    calls: dict[str, int] = field(default_factory=dict)
 
     def observe(self, labels: Iterable[str]) -> None:
         """Add labels of data that entered the agent's context."""
@@ -527,6 +551,7 @@ class Session:
         spec = policy.tools[call.tool]
         self.labels.update(_call_labels(call, labels), spec.result_labels)
         self.consequential = self.consequential or spec.consequential
+        self.calls[spec.capability] = self.calls.get(spec.capability, 0) + 1
 
     def admit(
         self, call: ToolCall, labels: Mapping[str, Iterable[str]], policy: ToolPolicy
@@ -829,6 +854,9 @@ def check_tool_call(
     untrusted data, whether or not the session holds sensitive data. Without ``session`` it is
     not checked.
 
+    With ``policy.session_limits``, a call whose capability class already ran its limit in the
+    session is escalated (rule id ``tool-session-limit``). Without ``session`` it is not checked.
+
     ``allow`` when everything holds, otherwise the most severe of ``policy.on_violation`` (per
     argument problems), ``policy.rule_of_two`` and the tool's ``untrusted_session``. An unknown
     tool is always refused.
@@ -886,6 +914,13 @@ def check_tool_call(
             f"{call.tool} is not run in a session that has read untrusted data",
         )
         actions.append(spec.untrusted_session)
+    limit = policy.session_limits.get(spec.capability)
+    if session is not None and limit is not None and session.calls.get(spec.capability, 0) >= limit:
+        out.add(
+            "tool-session-limit",
+            f"session already ran {limit} {spec.capability} calls, the limit",
+        )
+        actions.append("escalate")
     two: dict[str, bool] | None = None
     if session is not None and policy.rule_of_two != "off":
         seen = union(session.labels, call_labels, spec.result_labels)

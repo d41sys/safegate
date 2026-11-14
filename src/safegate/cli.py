@@ -888,7 +888,8 @@ def cmd_spec_check(args: argparse.Namespace) -> int:
 
 
 def _load_tool_call(path: str) -> tuple[ToolCall, dict[str, list[str]], Session | None]:
-    """Parse a ``tool-check`` input: ``tool``, ``args``, ``labels`` and an optional ``session``."""
+    """Parse a ``tool-check`` input: ``tool``, ``args``, ``labels`` and an optional ``session``
+    (``labels``, ``consequential``, ``calls``: the calls run so far per capability class)."""
     data = _load_json_object(path)
     unknown = set(data) - {"tool", "args", "labels", "session"}
     if unknown:
@@ -902,13 +903,18 @@ def _load_tool_call(path: str) -> tuple[ToolCall, dict[str, list[str]], Session 
     session = None
     if "session" in data:
         raw = data["session"]
-        if not isinstance(raw, dict) or set(raw) - {"labels", "consequential"}:
-            raise ValueError(f"{path}: session takes only labels and consequential")
+        if not isinstance(raw, dict) or set(raw) - {"labels", "consequential", "calls"}:
+            raise ValueError(f"{path}: session takes only labels, consequential and calls")
         consequential = raw.get("consequential", False)
         session_labels = raw.get("labels", [])
+        calls = raw.get("calls", {})
         if not isinstance(consequential, bool) or not isinstance(session_labels, list):
             raise ValueError(f"{path}: session.labels is a list, session.consequential a bool")
-        session = Session()
+        if not isinstance(calls, dict) or not all(
+            isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in calls.values()
+        ):
+            raise ValueError(f"{path}: session.calls maps capability classes to counts")
+        session = Session(calls=dict(calls))
         session.observe(session_labels)
         session.consequential = consequential
     return call, labels, session

@@ -119,7 +119,7 @@ print("".join(safe_llm("tell me about heat pumps")))
 Install into another project (for example the ezcross-ems backend) from a GitHub Release, no clone needed:
 
 ```bash
-uv add https://github.com/d41sys/safegate/releases/download/v0.2.0/safegate-0.2.0-py3-none-any.whl
+uv add https://github.com/d41sys/safegate/releases/download/v0.3.0/safegate-0.3.0-py3-none-any.whl
 ```
 
 CI (`.github/workflows/ci.yml`) runs ruff, format check, mypy and pytest on every push and pull request. Releases (`release.yml`): bump `version` in `pyproject.toml`, push a tag `v<version>`; the workflow re-runs the tests, checks the tag matches the version, builds the wheel and sdist and attaches them to a GitHub Release.
@@ -1636,6 +1636,8 @@ tools:
 
 **3b. Per-tool session rule** (`untrusted_session`, 6 Nov 2026). A `state-change` or `external-send` tool may declare `untrusted_session: allow | escalate | refuse` (default `allow`; a `read` or `write` tool that sets it is rejected). With `escalate` or `refuse`, the call is escalated or refused whenever the labels of the session so far and of the call's arguments hold any `untrusted:` label, sensitive data or not (`tool-untrusted-session`). It is for a tool with no argument worth checking: `reboot_inverter` is the only tool that sets it in `energy.yaml`. Like the Rule of Two it needs a `Session`. See "Per-tool session rule" below.
 
+**3c. Session limits** (`session_limits`, 15 Nov 2026). A policy may cap the calls of a capability class in one session: `session_limits: {state-change: 5, external-send: 3}`. The call that would pass a cap is escalated (`tool-session-limit`), so a slow drip of changes that each pass every other check reaches a human after N. Only recorded calls count (`Session.admit` records an allowed call; after a human approves an escalated one, the host calls `Session.record`). It is off in `energy.yaml`: in the full runs of qwen3:8b (experiment 5) and Sonnet 4.5 (`compliant`, `system`, experiment 3) a benign session made at most 2 `state-change` and 1 `external-send` call, and no scenario in the suite is a drip attack, so the suite cannot tell a good limit from a bad one. A host picks its own numbers. Like the Rule of Two it needs a `Session`.
+
 **4. Decision** (`check_tool_call`). Same `Decision` as the rest of safegate; argument violations take `on_violation` (`refuse`, `escalate` or `warn`), the Rule of Two takes its own action, and the stricter wins.
 
 ```python
@@ -1656,7 +1658,7 @@ uv run safegate tool-check examples/tools/call_reboot_session.json --policy exam
 uv run safegate tool-check examples/tools/call_reboot_untrusted.json --policy examples/tools/energy.yaml  # escalate (untrusted_session only: no sensitive data in the session)
 ```
 
-Exit codes: 0 allow/warn, 1 blocked, 2 unreadable input. A call file holds `tool`, `args`, `labels` and an optional `session` (`labels`, `consequential`). The worked example is a synthetic home-battery agent; an untrusted e-mail tries to change the export cap or the setpoint recipient. Nothing in it comes from a real site, vendor or contract.
+Exit codes: 0 allow/warn, 1 blocked, 2 unreadable input. A call file holds `tool`, `args`, `labels` and an optional `session` (`labels`, `consequential`, `calls`: the calls run so far per capability class, for a host that keeps the session between requests). The worked example is a synthetic home-battery agent; an untrusted e-mail tries to change the export cap or the setpoint recipient. Nothing in it comes from a real site, vendor or contract.
 
 ### Evaluation: synthetic AgentDojo-style suite (protocol `docs/protocol-toolcheck.md`, committed with predictions before any defended run was scored)
 
