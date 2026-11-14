@@ -540,6 +540,34 @@ class Session:
     consequential: bool = False
     calls: dict[str, int] = field(default_factory=dict)
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Session:
+        """Strictly parse ``{"labels": [...], "consequential": bool, "calls": {class: n}}``, the
+        state a host keeps between requests; unknown keys and capability classes raise."""
+        if not isinstance(data, Mapping) or set(data) - {"labels", "consequential", "calls"}:
+            raise ValueError("session takes only labels, consequential and calls")
+        labels = data.get("labels", [])
+        consequential = data.get("consequential", False)
+        calls = data.get("calls", {})
+        if not isinstance(labels, list) or not isinstance(consequential, bool):
+            raise ValueError("session.labels is a list, session.consequential a bool")
+        if not isinstance(calls, Mapping) or not all(
+            c in CAPABILITIES and isinstance(n, int) and not isinstance(n, bool) and n >= 0
+            for c, n in calls.items()
+        ):
+            raise ValueError(f"session.calls maps capability classes {CAPABILITIES} to counts")
+        session = cls(consequential=consequential, calls=dict(calls))
+        session.observe(labels)
+        return session
+
+    def to_dict(self) -> dict[str, Any]:
+        """The JSON form ``from_dict`` reads."""
+        return {
+            "labels": sorted(self.labels),
+            "consequential": self.consequential,
+            "calls": dict(self.calls),
+        }
+
     def observe(self, labels: Iterable[str]) -> None:
         """Add labels of data that entered the agent's context."""
         self.labels.update(parse_labels(labels))

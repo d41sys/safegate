@@ -1658,7 +1658,7 @@ uv run safegate tool-check examples/tools/call_reboot_session.json --policy exam
 uv run safegate tool-check examples/tools/call_reboot_untrusted.json --policy examples/tools/energy.yaml  # escalate (untrusted_session only: no sensitive data in the session)
 ```
 
-Exit codes: 0 allow/warn, 1 blocked, 2 unreadable input. A call file holds `tool`, `args`, `labels` and an optional `session` (`labels`, `consequential`, `calls`: the calls run so far per capability class, for a host that keeps the session between requests). The worked example is a synthetic home-battery agent; an untrusted e-mail tries to change the export cap or the setpoint recipient. Nothing in it comes from a real site, vendor or contract.
+Exit codes: 0 allow/warn, 1 blocked, 2 unreadable input. A call file holds `tool`, `args`, `labels` and an optional `session` (`labels`, `consequential`, `calls`: the calls run so far per capability class, for a host that keeps the session between requests; `Session.from_dict` parses it strictly and `Session.to_dict` writes it). The worked example is a synthetic home-battery agent; an untrusted e-mail tries to change the export cap or the setpoint recipient. Nothing in it comes from a real site, vendor or contract.
 
 ### Evaluation: synthetic AgentDojo-style suite (protocol `docs/protocol-toolcheck.md`, committed with predictions before any defended run was scored)
 

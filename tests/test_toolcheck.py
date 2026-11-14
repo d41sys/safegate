@@ -458,6 +458,7 @@ def test_session_limit_escalates_the_call_past_the_cap_and_counts_only_recorded_
     assert s.admit(ToolCall("read_calendar"), {}, policy).action == "allow"  # reads are not capped
     assert [s.admit(cap, owner, policy).action for _ in range(3)] == ["allow", "allow", "escalate"]
     assert s.calls == {"read": 1, "state-change": 2}  # the escalated call did not run
+    assert Session.from_dict(s.to_dict()) == s  # the state a host keeps between requests
     d = check_tool_call(cap, owner, policy, s)
     assert d.rule_ids == ["tool-session-limit"]
     # a human approves it: the host records it, and the next one is escalated as well
@@ -567,6 +568,7 @@ def test_tool_check_cli_reads_session_call_counts(tmp_path: Path) -> None:
     assert check({"calls": {"state-change": 2}}) == 1
     assert check({"calls": {"state-change": -1}}) == 2
     assert check({"calls": {"state-change": True}}) == 2
+    assert check({"calls": {"state_change": 2}}) == 2  # a misspelt class must not switch it off
 
 
 def test_tool_check_cli_bad_input_exits_2(tmp_path: Path) -> None:
