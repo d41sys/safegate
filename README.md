@@ -119,7 +119,7 @@ print("".join(safe_llm("tell me about heat pumps")))
 Install into another project (for example the ezcross-ems backend) from a GitHub Release, no clone needed:
 
 ```bash
-uv add https://github.com/d41sys/safegate/releases/download/v0.3.0/safegate-0.3.0-py3-none-any.whl
+uv add https://github.com/d41sys/safegate/releases/download/v0.3.1/safegate-0.3.1-py3-none-any.whl
 ```
 
 CI (`.github/workflows/ci.yml`) runs ruff, format check, mypy and pytest on every push and pull request. Releases (`release.yml`): bump `version` in `pyproject.toml`, push a tag `v<version>`; the workflow re-runs the tests, checks the tag matches the version, builds the wheel and sdist and attaches them to a GitHub Release.
