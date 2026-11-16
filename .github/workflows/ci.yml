@@ -23,3 +23,15 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy src
       - run: uv run pytest -q
+
+  # The [guard] extra (torch, transformers) installed: neural.py type-checks against the real
+  # nn.Module. Libraries only; mypy imports nothing, so no model weights are downloaded.
+  typecheck-guard:
+    runs-on: ubuntu-latest
+    env:
+      UV_TORCH_BACKEND: cpu
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uv sync --extra guard
+      - run: uv run mypy src

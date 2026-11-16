@@ -404,6 +404,18 @@ def test_openai_categories_reach_default_rules(monkeypatch: pytest.MonkeyPatch) 
     assert "block-classifier-sexual-minors" in decision.rule_ids
 
 
+def test_openai_adult_sexual_content_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    def create(input: str) -> Any:
+        dump = SimpleNamespace(model_dump=lambda: {"sexual": 0.2, "violence": 0.0})
+        flags = SimpleNamespace(model_dump=lambda: {"sexual": True, "violence": False})
+        result = SimpleNamespace(flagged=True, category_scores=dump, categories=flags)
+        return SimpleNamespace(results=[result])
+
+    decision = SafetyGate(classifier=_openai_classifier(monkeypatch, create)).check_input("x")
+    assert decision.action == "refuse"
+    assert "block-classifier-sexual" in decision.rule_ids
+
+
 def test_openai_key_without_extra_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "openai", None)  # import openai -> ImportError
     with pytest.raises(ImportError):
