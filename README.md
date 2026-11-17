@@ -18,27 +18,9 @@ A production LLM endpoint needs to:
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    U[User prompt] --> N[Normaliser<br/>zero-width, homoglyph, leet]
-    N --> S1[Stage 1<br/>regex families per category<br/>+ base64 / rot13 decode]
-    N --> S2[Stage 2<br/>logistic regression on hashed n-grams<br/>pooled v2 default with abstain band, legacy selectable]
-    S1 --> D[Detection<br/>score, category, reasons]
-    S2 --> D
-    U --> C[ContentClassifier<br/>Keyword / OpenAI / Composite]
-    D --> R[RulesEngine<br/>rule_configs/default.yaml]
-    C --> R
-    R -->|refuse / escalate| X[Refusal message]
-    R -->|allow / warn / redact| L[LLM]
-    L --> B[during-gen: 64-char sliding buffer<br/>output rules + classifier]
-    B -->|refuse / escalate| W["[response withheld by safety gate]"]
-    B --> P[post-gen: classifier + rules<br/>on the full output]
-    P -->|clean / redacted| O[User]
-    P -->|refuse| W
-    R -.-> T[(RequestTrace per request<br/>+ JSONL audit log)]
-    B -.-> T
-    P -.-> T
-```
+![Input path: a prompt is normalised and scored by two detection stages while a content classifier runs in parallel, then the rules engine either refuses or escalates to a refusal message or passes the prompt to the LLM.](docs/diagrams/safegate-input.svg)
+
+![Output path: allowed or redacted prompts go to the LLM, whose stream passes a 64-character sliding buffer and a full-output post-gen check that releases the text to the user or withholds it, while every stage writes to the request trace.](docs/diagrams/safegate-output.svg)
 
 | Module | Role |
 | --- | --- |
